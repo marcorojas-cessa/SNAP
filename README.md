@@ -471,11 +471,11 @@ SNAP_batch('data/', 'params.mat', ...
 If you use SNAP in your research, please cite:
 
 ```bibtex
-@software{snap2024,
+@software{snap2025,
   title = {SNAP: Spot \& Nuclei Analysis Pipeline},
-  author = {Rothstein Lab},
-  year = {2024},
-  url = {https://github.com/yourusername/SNAP}
+  author = {Rojas-Cessa, M. A.},
+  year = {2025},
+  url = {https://github.com/marcorojas-cessa/SNAP}
 }
 ```
 
