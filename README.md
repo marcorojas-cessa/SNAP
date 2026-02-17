@@ -392,6 +392,38 @@ SNAP_batch('data/', 'params.mat', ...
 
 ---
 
+### Train from Existing Labels (Command Line)
+
+If you already have labeled spots for many images, you can train a classifier without the manual UI:
+
+```matlab
+exportFiles = {'image1_ch1_signals.mat', 'image2_ch1_signals.mat'};
+labelFiles  = {'image1_labels.csv', 'image2_labels.csv'};
+
+SNAP_trainSVM(exportFiles, labelFiles, 'channel1_classifier.mat', ...
+    'MatchDistance', 2, ... % voxels
+    'ValidationExportFiles', valExportFiles, ...
+    'ValidationLabelFiles', valLabelFiles, ...
+    'HyperparameterSweep', true);
+```
+
+Or run interactively and provide training/validation directories + output when prompted:
+
+```matlab
+SNAP_trainSVM
+```
+
+Supported label files:
+- CSV/table with coordinate columns (`maxima_y`/`fitted_y`/`y`, `maxima_x`/`fitted_x`/`x`, optional z) plus `label`
+- MAT progress files from `SNAP_classify` (`labeledReal`, `labeledNoise`)
+
+For coordinate labels, each manual label is matched to the nearest unassigned candidate within `MatchDistance` voxels (one candidate per manual label). Any unmatched candidates are automatically labeled as noise so every candidate contributes to training. If validation files are provided, `SNAP_trainSVM` sweeps SVM parameters (kernel, box constraint, kernel scale / polynomial order) and selects the best model by validation F1 (real class). The training-set real/noise labels are fixed from training volumes and are not relabeled during validation.
+
+The output classifier is saved in the same format as `SNAP_classify` export and can be loaded directly in `SNAP` / `SNAP_batch`.
+
+---
+
+
 ## Output Data Format
 
 ### Nuclei Data (CSV)
