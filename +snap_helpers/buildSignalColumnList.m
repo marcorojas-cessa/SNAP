@@ -65,7 +65,7 @@ function [header_cols, include_flags] = buildSignalColumnList(hasFitting, fitMet
 %   header_cols   - Cell array of column names to include
 %   include_flags - Struct with boolean flags for which columns to include
 
-% Handle optional parameter (backward compatibility)
+% Handle optional parameter
 if nargin < 4
     includeChannelID = true;  % Default to including it
 end
@@ -149,4 +149,3 @@ if isSkewed
 end
 
 end
-

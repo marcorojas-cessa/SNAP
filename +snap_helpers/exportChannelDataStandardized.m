@@ -34,7 +34,7 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
 %   fitParams       - Fitting parameters struct containing:
 %                     .imageType (required)
 %                     .gaussFitMethod (required if fitting performed)
-%                     .gaussFitMode (optional, legacy field)
+%                     .gaussFitMode (optional)
 %                     .gaussFitBgCorrMethod, .gaussFitBgCorrWidth, etc. (optional)
 %   options         - Optional struct with fields:
 %                     .spacing ([dy, dx, dz] in microns, optional)
@@ -78,6 +78,10 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     
     % Check if fitting was performed
     hasFitting = isfield(channelResults, 'fit_results') && ~isempty(channelResults.fit_results);
+    fitMethodForColumns = '';
+    if isfield(fitParams, 'gaussFitMethod') && ~isempty(fitParams.gaussFitMethod)
+        fitMethodForColumns = fitParams.gaussFitMethod;
+    end
     
     % Determine fitting method characteristics
     if hasFitting
@@ -130,8 +134,16 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
             matData.parameters.radial_radius = fitParams.gaussFitRadialRadius;
         end
     end
-    matData.parameters.bg_method = fitParams.gaussFitBgCorrMethod;
-    matData.parameters.bg_width = fitParams.gaussFitBgCorrWidth;
+    if isfield(fitParams, 'gaussFitBgCorrMethod')
+        matData.parameters.bg_method = fitParams.gaussFitBgCorrMethod;
+    else
+        matData.parameters.bg_method = 'Not specified';
+    end
+    if isfield(fitParams, 'gaussFitBgCorrWidth')
+        matData.parameters.bg_width = fitParams.gaussFitBgCorrWidth;
+    else
+        matData.parameters.bg_width = NaN;
+    end
     if isfield(fitParams, 'gaussFitPolyDegree')
         matData.parameters.bg_poly_degree = fitParams.gaussFitPolyDegree;
     end
@@ -278,17 +290,21 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     matFilename = [outputPath '.mat'];
     csvFilename = [outputPath '.csv'];
     fid = fopen(csvFilename, 'w');
+    if fid == -1
+        warning('Could not create channel CSV export file: %s', csvFilename);
+        return;
+    end
     
     % Build header using SHARED helper (ZERO REDUNDANCY!)
     % This ensures columns EXACTLY match exportNucleiSignalDataStandardized (expanded CSV)
     % NOTE: Channel export is for ONE channel, so channel_id column not needed (false parameter)
-    [signal_header_cols, include_flags] = snap_helpers.buildSignalColumnList(hasFitting, fitParams.gaussFitMethod, options.is_3d, false);
+    [signal_header_cols, include_flags] = snap_helpers.buildSignalColumnList(hasFitting, fitMethodForColumns, options.is_3d, false);
     
     % Conditionally add image_name (only for batch exports)
     include_image_name = ~isempty(imageName);
     if include_image_name
-        header_cols = ['image_name', signal_header_cols];
-            else
+        header_cols = [{'image_name'}, signal_header_cols];
+    else
         header_cols = signal_header_cols;
     end
     
@@ -375,6 +391,10 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     %% ===== PARAMETER RECEIPT (TXT) =====
     txtFilename = [outputPath '_receipt.txt'];
     fid = fopen(txtFilename, 'w');
+    if fid == -1
+        warning('Could not create channel export receipt file: %s', txtFilename);
+        return;
+    end
     
     fprintf(fid, '========================================\n');
     fprintf(fid, 'SNAP Channel Signal Analysis Parameters\n');
@@ -405,8 +425,16 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
         fprintf(fid, '\n');
         
         fprintf(fid, '--- Background Correction ---\n');
-        fprintf(fid, 'Method: %s\n', fitParams.gaussFitBgCorrMethod);
-        fprintf(fid, 'Width: %d pixels/voxels\n', fitParams.gaussFitBgCorrWidth);
+        if isfield(fitParams, 'gaussFitBgCorrMethod')
+            fprintf(fid, 'Method: %s\n', fitParams.gaussFitBgCorrMethod);
+        else
+            fprintf(fid, 'Method: Not specified\n');
+        end
+        if isfield(fitParams, 'gaussFitBgCorrWidth')
+            fprintf(fid, 'Width: %d pixels/voxels\n', fitParams.gaussFitBgCorrWidth);
+        else
+            fprintf(fid, 'Width: Not specified\n');
+        end
         if isfield(fitParams, 'gaussFitPolyDegree')
             fprintf(fid, 'Polynomial Degree: %d\n', fitParams.gaussFitPolyDegree);
         end
@@ -426,13 +454,3 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     fclose(fid);
     % Receipt and MAT saved silently
 end
-
-%% Helper function for formatting values
-function str = formatValue(val)
-    if isnan(val) || isempty(val)
-        str = 'NaN';
-    else
-        str = sprintf('%.4f', val);
-    end
-end
-

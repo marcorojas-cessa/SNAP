@@ -13,12 +13,20 @@ function createPreviewCache(handles)
         if isfield(handles, 'rawNuclei') && ~isempty(handles.rawNuclei)
             try
                 cache.nuclei = struct();
-                
-                % Pre-process nuclei image
-                cache.nuclei.processed = snap_helpers.preprocessNucleiWithBgCorr(handles);
-                
-                % Segment nuclei with consistent labeling
-                [cache.nuclei.mask, cache.nuclei.labels] = snap_helpers.segmentNuclei(cache.nuclei.processed, handles);
+
+                if isfield(handles, 'processedNuclei') && ~isempty(handles.processedNuclei) && ...
+                        isfield(handles, 'nucleiMask') && ~isempty(handles.nucleiMask) && ...
+                        isfield(handles, 'nucleusLabels') && ~isempty(handles.nucleusLabels)
+                    cache.nuclei.processed = handles.processedNuclei;
+                    cache.nuclei.mask = handles.nucleiMask;
+                    cache.nuclei.labels = handles.nucleusLabels;
+                else
+                    % Pre-process nuclei image
+                    cache.nuclei.processed = snap_helpers.preprocessNucleiWithBgCorr(handles);
+
+                    % Segment nuclei with consistent labeling
+                    [cache.nuclei.mask, cache.nuclei.labels] = snap_helpers.segmentNuclei(cache.nuclei.processed, handles);
+                end
                 
                 % Validate nuclei labeling consistency
                 if ~isempty(cache.nuclei.labels) && isfield(cache.nuclei.labels, 'centroids_3d') && ...

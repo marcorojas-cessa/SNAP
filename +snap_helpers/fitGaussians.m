@@ -1,4 +1,4 @@
-function fitResults = fitGaussians(imageData, maximaCoords, fitParams, is3D)
+function [fitResults, wasAborted] = fitGaussians(imageData, maximaCoords, fitParams, is3D, varargin)
 %fitGaussians Performs Gaussian fitting on local maxima.
 %   This function takes image data and a list of local maxima and applies
 %   a Gaussian fitting workflow based on the provided parameters.
@@ -17,11 +17,65 @@ function fitResults = fitGaussians(imageData, maximaCoords, fitParams, is3D)
 %   maximaCoords - Nx3 array of [row, col, slice] (ARRAY CONVENTION)
 %   fitParams    - Structure with fitting parameters
 %   is3D         - Boolean indicating 3D data
+%   varargin{1}  - Optional function handle returning true when abort is requested
 %
 % Outputs:
 %   fitResults   - Structure array with fit parameters and coordinate info
+%   wasAborted   - True if fitting was stopped early via abort callback
 
+    wasAborted = false;
+    abortCheckFcn = [];
+    abortPollInterval = 5;
+    if ~isempty(varargin) && isa(varargin{1}, 'function_handle')
+        abortCheckFcn = varargin{1};
+    end
+    if numel(varargin) >= 2 && isnumeric(varargin{2}) && isscalar(varargin{2}) && isfinite(varargin{2})
+        abortPollInterval = max(1, round(varargin{2}));
+    end
 
+    if ~isfield(fitParams, 'gaussFitMethod') || isempty(fitParams.gaussFitMethod)
+        fitParams.gaussFitMethod = '1D (X,Y,Z) Gaussian';
+    end
+    if ~isfield(fitParams, 'gaussFitBgCorrMethod') || isempty(fitParams.gaussFitBgCorrMethod)
+        fitParams.gaussFitBgCorrMethod = 'Mean Surrounding Subtraction';
+    end
+    if ~isfield(fitParams, 'gaussFitBgCorrWidth') || isempty(fitParams.gaussFitBgCorrWidth)
+        fitParams.gaussFitBgCorrWidth = 1;
+    end
+    if ~isfield(fitParams, 'gaussFitVoxelWindowSize') || isempty(fitParams.gaussFitVoxelWindowSize)
+        fitParams.gaussFitVoxelWindowSize = 7;
+    end
+    if ~isfield(fitParams, 'gaussFitPolyDegree') || isempty(fitParams.gaussFitPolyDegree)
+        fitParams.gaussFitPolyDegree = 2;
+    end
+    if ~isfield(fitParams, 'gaussFitPlotCheck') || isempty(fitParams.gaussFitPlotCheck)
+        fitParams.gaussFitPlotCheck = false;
+    end
+    if ~isfield(fitParams, 'gaussFitMaxIterations') || isempty(fitParams.gaussFitMaxIterations)
+        fitParams.gaussFitMaxIterations = 200;
+    end
+    if ~isfield(fitParams, 'gaussFitTolerance') || isempty(fitParams.gaussFitTolerance)
+        fitParams.gaussFitTolerance = 1e-6;
+    end
+    if ~isfield(fitParams, 'gaussFitRadialRadius') || isempty(fitParams.gaussFitRadialRadius)
+        fitParams.gaussFitRadialRadius = 3;
+    end
+    fitParams.gaussFitVoxelWindowSize = sanitizeOddInteger(fitParams.gaussFitVoxelWindowSize, 3, 21, 7);
+    fitParams.gaussFitBgCorrWidth = sanitizeInteger(fitParams.gaussFitBgCorrWidth, 0, 10, 1);
+    fitParams.gaussFitPolyDegree = sanitizeInteger(fitParams.gaussFitPolyDegree, 1, 3, 2);
+    fitParams.gaussFitMaxIterations = sanitizeInteger(fitParams.gaussFitMaxIterations, 10, 1000, 200);
+    fitParams.gaussFitTolerance = sanitizePositive(fitParams.gaussFitTolerance, 1e-12, 1, 1e-6);
+    fitParams.gaussFitRadialRadius = sanitizePositive(fitParams.gaussFitRadialRadius, 0.5, 20, 3);
+
+    % Normalize configurable method names once (prevents per-maxima fallback logic).
+    [fitMethod, fitMethodWasDefaulted, fitMethodOriginal] = normalizeFitMethodName(fitParams.gaussFitMethod, is3D);
+    if fitMethodWasDefaulted
+        warning('Adjusted fitting method "%s" to "%s".', fitMethodOriginal, fitMethod);
+    end
+    [bgMethod, bgMethodWasDefaulted, bgMethodOriginal] = normalizeBgMethodName(fitParams.gaussFitBgCorrMethod);
+    if bgMethodWasDefaulted
+        warning('Unsupported background correction method "%s". Using "%s".', bgMethodOriginal, bgMethod);
+    end
 
     % Pre-allocate results structure
     numMaxima = size(maximaCoords, 1);
@@ -38,6 +92,16 @@ function fitResults = fitGaussians(imageData, maximaCoords, fitParams, is3D)
 imgSize = size(imageData);
 
 for i = 1:numMaxima
+    if ~isempty(abortCheckFcn) && (i == 1 || mod(i - 1, abortPollInterval) == 0)
+        % Let UI callbacks run so Abort button state is processed promptly.
+        drawnow limitrate;
+        if localAbortRequested(abortCheckFcn)
+            wasAborted = true;
+            fitResults = fitResults(1:i-1);
+            break;
+        end
+    end
+
     % Initialize all results to NaN to handle cases where a field is not calculated
     fitResults(i).amplitude = NaN;
     fitResults(i).amplitude_x = NaN; fitResults(i).amplitude_y = NaN; fitResults(i).amplitude_z = NaN;
@@ -49,7 +113,7 @@ for i = 1:numMaxima
     fitResults(i).background = NaN; fitResults(i).integratedIntensity = NaN; fitResults(i).r_squared = NaN;
     fitResults(i).radialSymmetryScore = NaN;  % For radial symmetry methods
     fitResults(i).originalMaximaCoords = maximaCoords(i, :);
-    fitResults(i).fitMethod = fitParams.gaussFitMethod;
+    fitResults(i).fitMethod = fitMethod;
     % Initialize background fields
     fitResults(i).background_method = '';
     fitResults(i).background_coeffs = [];
@@ -94,6 +158,7 @@ for i = 1:numMaxima
         % Store window bounds in global image coordinates (for background ROI reference)
         fitResults(i).background_roi_bounds = [row_min, row_max; col_min, col_max];
     end
+    fitResults(i).rawDataWindow = windowData;
 
     % --- 2. Perform Local Background Correction ---
     bgWidth = fitParams.gaussFitBgCorrWidth;
@@ -132,7 +197,7 @@ for i = 1:numMaxima
     
     backgroundCorrectedWindow = windowData; % Initialize
     
-    switch fitParams.gaussFitBgCorrMethod
+    switch bgMethod
         case 'Mean Surrounding Subtraction'
             backgroundVoxels = surroundingData(mask);
             meanBackground = mean(backgroundVoxels, 'all');
@@ -149,7 +214,7 @@ for i = 1:numMaxima
             
             % Construct the design matrix A based on the model
             if is3D
-                if strcmp(fitParams.gaussFitBgCorrMethod, 'Local Plane Fitting')
+                if strcmp(bgMethod, 'Local Plane Fitting')
                     A = [bg_x, bg_y, bg_z, ones(size(bg_x))];
                 else % Polynomial
                     deg = fitParams.gaussFitPolyDegree;
@@ -160,7 +225,7 @@ for i = 1:numMaxima
                     A = [A, ones(size(bg_x))];
                 end
             else % 2D
-                if strcmp(fitParams.gaussFitBgCorrMethod, 'Local Plane Fitting')
+                if strcmp(bgMethod, 'Local Plane Fitting')
                     A = [bg_x, bg_y, ones(size(bg_x))];
                 else % Polynomial
                     deg = fitParams.gaussFitPolyDegree;
@@ -181,7 +246,7 @@ for i = 1:numMaxima
             
             % Build design matrix for window
             if is3D
-                if strcmp(fitParams.gaussFitBgCorrMethod, 'Local Plane Fitting')
+                if strcmp(bgMethod, 'Local Plane Fitting')
                     A_win = [win_x, win_y, win_z, ones(size(win_x))];
                 else
                     deg = fitParams.gaussFitPolyDegree;
@@ -192,7 +257,7 @@ for i = 1:numMaxima
                     A_win = [A_win, ones(size(win_x))];
                 end
             else % 2D
-                if strcmp(fitParams.gaussFitBgCorrMethod, 'Local Plane Fitting')
+                if strcmp(bgMethod, 'Local Plane Fitting')
                     A_win = [win_x, win_y, ones(size(win_x))];
                 else
                     deg = fitParams.gaussFitPolyDegree;
@@ -213,16 +278,16 @@ for i = 1:numMaxima
                 warning('Polynomial/plane fitting produced invalid values (NaN/Inf). Falling back to mean background subtraction.');
                 meanBackground = mean(double(surroundingData(mask)), 'all');
                 backgroundCorrectedWindow = double(windowData) - meanBackground;
-                % Store mean background with fallback indicator
+                % Store mean background with default-method indicator
                 fitResults(i).background = meanBackground;
                 fitResults(i).background_method = 'Mean (Fallback)';
             else
                 backgroundCorrectedWindow = double(windowData) - fitted_bg_reshaped;
                 % Store polynomial/plane background information
                 fitResults(i).background = mean(fitted_bg, 'all');  % Mean for reference
-                fitResults(i).background_method = fitParams.gaussFitBgCorrMethod;
+                fitResults(i).background_method = bgMethod;
                 fitResults(i).background_coeffs = coeffs;
-                if strcmp(fitParams.gaussFitBgCorrMethod, 'Local Polynomial Fitting')
+                if strcmp(bgMethod, 'Local Polynomial Fitting')
                     fitResults(i).background_degree = fitParams.gaussFitPolyDegree;
                 else
                     fitResults(i).background_degree = 1;  % Plane is degree 1
@@ -241,19 +306,17 @@ for i = 1:numMaxima
         actual_center_row_in_window = centerCoord(1) - row_min + 1;
         actual_center_col_in_window = centerCoord(2) - col_min + 1;
         actual_center_slice_in_window = centerCoord(3) - slice_min + 1;
-        % NOTE: window_info uses legacy naming (center_x, center_y, center_z) for compatibility with fitting functions
-        % but these actually represent [row, col, slice] in ARRAY CONVENTION
+        % window_info fields are historical names, but values are [row, col, slice].
         window_info = struct('center_x', actual_center_row_in_window, 'center_y', actual_center_col_in_window, 'center_z', actual_center_slice_in_window);
     else
         actual_center_row_in_window = centerCoord(1) - row_min + 1;
         actual_center_col_in_window = centerCoord(2) - col_min + 1;
-        % NOTE: window_info uses legacy naming (center_x, center_y) for compatibility with fitting functions
-        % but these actually represent [row, col] in ARRAY CONVENTION
+        % window_info fields are historical names, but values are [row, col].
         window_info = struct('center_x', actual_center_row_in_window, 'center_y', actual_center_col_in_window);
     end
     
-    switch fitParams.gaussFitMethod
-        case {'1D (X,Y,Z)', '1D (X,Y,Z) Gaussian'}
+    switch fitMethod
+        case '1D (X,Y,Z) Gaussian'
             [amplitude, center_x, center_y, center_z, sigma_x, sigma_y, sigma_z, r_squared_vals, amplitude_x, amplitude_y, amplitude_z, x_profile, y_profile, z_profile] = fit_1D_gaussians(backgroundCorrectedWindow, fitParams, is3D, window_info);
             fitResults(i).amplitude = amplitude;
             fitResults(i).center_x = center_x;
@@ -272,7 +335,7 @@ for i = 1:numMaxima
             fitResults(i).y_profile = y_profile;
             fitResults(i).z_profile = z_profile;
             
-        case {'2D (XY) + 1D (Z)', '2D (XY) + 1D (Z) Gaussian'}
+        case '2D (XY) + 1D (Z) Gaussian'
             if is3D
                 [amplitude, center_x, center_y, center_z, sigma_x, sigma_y, sigma_z, r_squared_vals, amplitude_x, amplitude_y, amplitude_z, z_profile, xy_slice] = fit_2D_plus_1D_gaussians(backgroundCorrectedWindow, fitParams, window_info);
                 fitResults(i).amplitude = amplitude;  % 2D XY amplitude
@@ -302,56 +365,52 @@ for i = 1:numMaxima
             end
             
         case 'Distorted 3D Gaussian'
-            if is3D
-                [fit_params, r_squared] = fit_3D_distorted(backgroundCorrectedWindow, fitParams, window_info);
-                fitResults(i).amplitude = fit_params(1);
-                fitResults(i).center_x = fit_params(2);
-                fitResults(i).center_y = fit_params(3);
-                fitResults(i).center_z = fit_params(4);
-                fitResults(i).sigma_x = fit_params(5);
-                fitResults(i).sigma_y = fit_params(6);
-                fitResults(i).sigma_z = fit_params(7);
-                fitResults(i).rho_xy = fit_params(8);
-                fitResults(i).rho_xz = fit_params(9);
-                fitResults(i).rho_yz = fit_params(10);
-                fitResults(i).r_squared = r_squared;
-                % Store the actual fitted data for visualization consistency
-                fitResults(i).fittedDataWindow = backgroundCorrectedWindow;
-            else
-                warning('Distorted 3D Gaussian not applicable for 2D data. Using 2D distorted fit.');
-                [fit_2d, r_squared_2d] = fit_2D_distorted(backgroundCorrectedWindow, fitParams, window_info);
-                fitResults(i).amplitude = fit_2d(1);
-                fitResults(i).center_x = fit_2d(2);
-                fitResults(i).center_y = fit_2d(3);
-                fitResults(i).sigma_x = fit_2d(4);
-                fitResults(i).sigma_y = fit_2d(5);
-                fitResults(i).rho_xy = fit_2d(6);
-                fitResults(i).r_squared = r_squared_2d;
-            end
+            [fit_params, r_squared] = fit_3D_distorted(backgroundCorrectedWindow, fitParams, window_info);
+            fitResults(i).amplitude = fit_params(1);
+            fitResults(i).center_x = fit_params(2);
+            fitResults(i).center_y = fit_params(3);
+            fitResults(i).center_z = fit_params(4);
+            fitResults(i).sigma_x = fit_params(5);
+            fitResults(i).sigma_y = fit_params(6);
+            fitResults(i).sigma_z = fit_params(7);
+            fitResults(i).rho_xy = fit_params(8);
+            fitResults(i).rho_xz = fit_params(9);
+            fitResults(i).rho_yz = fit_params(10);
+            fitResults(i).r_squared = r_squared;
+            % Store the actual fitted data for visualization consistency
+            fitResults(i).fittedDataWindow = backgroundCorrectedWindow;
+
+        case 'Distorted 2D Gaussian'
+            [fit_2d, r_squared_2d] = fit_2D_distorted(backgroundCorrectedWindow, fitParams, window_info);
+            fitResults(i).amplitude = fit_2d(1);
+            fitResults(i).center_x = fit_2d(2);
+            fitResults(i).center_y = fit_2d(3);
+            fitResults(i).sigma_x = fit_2d(4);
+            fitResults(i).sigma_y = fit_2d(5);
+            fitResults(i).rho_xy = fit_2d(6);
+            fitResults(i).r_squared = r_squared_2d;
 
         case '3D Gaussian'
-            if is3D
-                [fit_params, r_squared] = fit_3D(backgroundCorrectedWindow, fitParams, window_info);
-                fitResults(i).amplitude = fit_params(1);
-                fitResults(i).center_x = fit_params(2);
-                fitResults(i).center_y = fit_params(3);
-                fitResults(i).center_z = fit_params(4);
-                fitResults(i).sigma_x = fit_params(5);
-                fitResults(i).sigma_y = fit_params(6);
-                fitResults(i).sigma_z = fit_params(7);
-                fitResults(i).r_squared = r_squared;
-                % Store the actual fitted data for visualization consistency
-                fitResults(i).fittedDataWindow = backgroundCorrectedWindow;
-            else
-                warning('3D Gaussian not applicable for 2D data. Using 2D fit.');
-                [fit_2d, r_squared_2d] = fit_2D(backgroundCorrectedWindow, fitParams, window_info);
-                fitResults(i).amplitude = fit_2d(1);
-                fitResults(i).center_x = fit_2d(2);
-                fitResults(i).center_y = fit_2d(3);
-                fitResults(i).sigma_x = fit_2d(4);
-                fitResults(i).sigma_y = fit_2d(5);
-                fitResults(i).r_squared = r_squared_2d;
-            end
+            [fit_params, r_squared] = fit_3D(backgroundCorrectedWindow, fitParams, window_info);
+            fitResults(i).amplitude = fit_params(1);
+            fitResults(i).center_x = fit_params(2);
+            fitResults(i).center_y = fit_params(3);
+            fitResults(i).center_z = fit_params(4);
+            fitResults(i).sigma_x = fit_params(5);
+            fitResults(i).sigma_y = fit_params(6);
+            fitResults(i).sigma_z = fit_params(7);
+            fitResults(i).r_squared = r_squared;
+            % Store the actual fitted data for visualization consistency
+            fitResults(i).fittedDataWindow = backgroundCorrectedWindow;
+
+        case '2D Gaussian'
+            [fit_2d, r_squared_2d] = fit_2D(backgroundCorrectedWindow, fitParams, window_info);
+            fitResults(i).amplitude = fit_2d(1);
+            fitResults(i).center_x = fit_2d(2);
+            fitResults(i).center_y = fit_2d(3);
+            fitResults(i).sigma_x = fit_2d(4);
+            fitResults(i).sigma_y = fit_2d(5);
+            fitResults(i).r_squared = r_squared_2d;
             
         case 'Radial Symmetry'
             [fit_params, r_squared, quality_metrics] = fit_radial_symmetry(backgroundCorrectedWindow, fitParams, is3D, window_info);
@@ -376,24 +435,7 @@ for i = 1:numMaxima
             fitResults(i).fittedDataWindow = backgroundCorrectedWindow;
             
         otherwise
-            warning('Unknown fitting method: %s. Using 1D fitting as fallback.', fitParams.gaussFitMethod);
-            [amplitude, center_x, center_y, center_z, sigma_x, sigma_y, sigma_z, r_squared_vals, amplitude_x, amplitude_y, amplitude_z, x_profile, y_profile, z_profile] = fit_1D_gaussians(backgroundCorrectedWindow, fitParams, is3D, window_info);
-            fitResults(i).amplitude = amplitude;
-            fitResults(i).center_x = center_x;
-            fitResults(i).center_y = center_y;
-            fitResults(i).center_z = center_z;
-            fitResults(i).sigma_x = sigma_x;
-            fitResults(i).sigma_y = sigma_y;
-            fitResults(i).sigma_z = sigma_z;
-            fitResults(i).r_squared = r_squared_vals;
-            % Store individual amplitudes for 1D visualization
-            fitResults(i).amplitude_x = amplitude_x;
-            fitResults(i).amplitude_y = amplitude_y;
-            fitResults(i).amplitude_z = amplitude_z;
-            % Store the actual fitted profiles for visualization consistency
-            fitResults(i).x_profile = x_profile;
-            fitResults(i).y_profile = y_profile;
-            fitResults(i).z_profile = z_profile;
+            error('Internal error: unresolved fit method "%s".', fitMethod);
     end
     
     % --- 4. Calculate Global Sub-Pixel Fit Center Coordinates ---
@@ -420,11 +462,143 @@ for i = 1:numMaxima
 end  % End of maxima loop
 
 % --- 5. Optional Plotting ---
-if fitParams.gaussFitPlotCheck
+if ~wasAborted && fitParams.gaussFitPlotCheck
     % Placeholder for plotting logic
     warning('Plotting is not yet implemented.');
 end
 
+end
+
+function tf = localAbortRequested(abortCheckFcn)
+    tf = false;
+    if isempty(abortCheckFcn) || ~isa(abortCheckFcn, 'function_handle')
+        return;
+    end
+    try
+        tf = logical(abortCheckFcn());
+    catch
+        tf = false;
+    end
+end
+
+function out = sanitizeOddInteger(in, minVal, maxVal, fallback)
+    out = sanitizeInteger(in, minVal, maxVal, fallback);
+    if mod(out, 2) == 0
+        if out >= maxVal
+            out = out - 1;
+        else
+            out = out + 1;
+        end
+    end
+    out = max(minVal, min(maxVal, out));
+end
+
+function out = sanitizeInteger(in, minVal, maxVal, fallback)
+    out = fallback;
+    if isnumeric(in) && isscalar(in) && isfinite(in)
+        out = round(in);
+    end
+    out = max(minVal, min(maxVal, out));
+end
+
+function out = sanitizePositive(in, minVal, maxVal, fallback)
+    out = fallback;
+    if isnumeric(in) && isscalar(in) && isfinite(in) && in > 0
+        out = in;
+    end
+    out = max(minVal, min(maxVal, out));
+end
+
+function [methodName, wasDefaulted, originalName] = normalizeFitMethodName(methodInput, is3D)
+    defaultName = '1D (X,Y,Z) Gaussian';
+    if iscell(methodInput)
+        methodInput = methodInput{1};
+    end
+    if isstring(methodInput) && numel(methodInput) > 1
+        methodInput = methodInput(1);
+    end
+    methodName = char(string(methodInput));
+    methodName = strtrim(methodName);
+    originalName = methodName;
+    wasDefaulted = false;
+    if isempty(methodName)
+        methodName = defaultName;
+        wasDefaulted = true;
+        originalName = '<empty>';
+        return;
+    end
+
+    methodKey = lower(methodName);
+    switch methodKey
+        case {'1d (x,y,z)', '1d (x,y,z) gaussian', '1d x,y,z gaussian', '1d gaussian'}
+            methodName = '1D (X,Y,Z) Gaussian';
+        case {'2d (xy) + 1d (z)', '2d (xy) + 1d (z) gaussian', '2d+1d gaussian'}
+            methodName = '2D (XY) + 1D (Z) Gaussian';
+        case {'3d gaussian'}
+            methodName = '3D Gaussian';
+        case {'2d gaussian'}
+            methodName = '2D Gaussian';
+        case {'distorted 3d gaussian', 'distorted gaussian'}
+            methodName = 'Distorted 3D Gaussian';
+        case {'distorted 2d gaussian'}
+            methodName = 'Distorted 2D Gaussian';
+        case {'radial symmetry'}
+            methodName = 'Radial Symmetry';
+        otherwise
+            methodName = defaultName;
+            wasDefaulted = true;
+    end
+
+    if ~is3D
+        if strcmp(methodName, '3D Gaussian')
+            methodName = '2D Gaussian';
+            wasDefaulted = true;
+        elseif strcmp(methodName, 'Distorted 3D Gaussian')
+            methodName = 'Distorted 2D Gaussian';
+            wasDefaulted = true;
+        end
+    else
+        if strcmp(methodName, '2D Gaussian')
+            methodName = '3D Gaussian';
+            wasDefaulted = true;
+        elseif strcmp(methodName, 'Distorted 2D Gaussian')
+            methodName = 'Distorted 3D Gaussian';
+            wasDefaulted = true;
+        end
+    end
+end
+
+function [methodName, wasDefaulted, originalName] = normalizeBgMethodName(methodInput)
+    defaultName = 'Mean Surrounding Subtraction';
+    if iscell(methodInput)
+        methodInput = methodInput{1};
+    end
+    if isstring(methodInput) && numel(methodInput) > 1
+        methodInput = methodInput(1);
+    end
+    methodName = char(string(methodInput));
+    methodName = strtrim(methodName);
+    originalName = methodName;
+    wasDefaulted = false;
+    if isempty(methodName)
+        methodName = defaultName;
+        wasDefaulted = true;
+        originalName = '<empty>';
+        return;
+    end
+
+    methodKey = lower(methodName);
+    switch methodKey
+        case {'mean surrounding subtraction'}
+            methodName = 'Mean Surrounding Subtraction';
+        case {'local plane fitting', 'plane fitting'}
+            methodName = 'Local Plane Fitting';
+        case {'local polynomial fitting', 'polynomial fitting'}
+            methodName = 'Local Polynomial Fitting';
+        otherwise
+            methodName = defaultName;
+            wasDefaulted = true;
+    end
 end
 
 
@@ -1011,7 +1185,7 @@ function [fit_params, r_squared, quality_metrics] = fit_radial_symmetry(data, fi
 
     end
     
-    % Return the raw score (not normalized quality) as r_squared for compatibility
+    % Return the raw score (not normalized quality) as r_squared output.
     r_squared = score;
 end
 
@@ -1432,4 +1606,3 @@ function quality_metrics = calculate_quality_metrics_3d(score_map, gradient_coun
     quality_metrics.relative_score = relative_score;
     quality_metrics.background_uniformity = background_uniformity;
 end
-

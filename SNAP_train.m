@@ -1,8 +1,8 @@
-function out = SNAP_trainSVM(exportFiles, labelFiles, outputClassifierPath, varargin)
-% SNAP_trainSVM - Train and validate a SNAP-compatible SVM from labeled spot files
+function out = SNAP_train(exportFiles, labelFiles, outputClassifierPath, varargin)
+% SNAP_train - Train and validate a SNAP-compatible SVM from labeled spot files
 %
 % INTERACTIVE MODE:
-%   SNAP_trainSVM
+%   SNAP_train
 %   Prompts for:
 %     - Match distance (voxels)
 %     - Training directory containing exported candidate MAT files + labels
@@ -12,7 +12,7 @@ function out = SNAP_trainSVM(exportFiles, labelFiles, outputClassifierPath, vara
 %   Training real/noise labels are fixed from training volumes and never relabeled during validation.
 %
 % PROGRAMMATIC MODE:
-%   SNAP_trainSVM(exportFiles, labelFiles, outputClassifierPath, ...)
+%   SNAP_train(exportFiles, labelFiles, outputClassifierPath, ...)
 %
 % REQUIRED INPUTS:
 %   exportFiles           - char/string/cellstr of SNAP export MAT file(s)
@@ -191,7 +191,7 @@ function out = SNAP_trainSVM(exportFiles, labelFiles, outputClassifierPath, vara
     metadata.nSamples = numel(yTrain);
     metadata.nRealLabeled = sum(yTrain == 1);
     metadata.nNoiseLabeled = sum(yTrain == 0);
-    metadata.trainingSource = 'SNAP_trainSVM';
+    metadata.trainingSource = 'SNAP_train';
     metadata.exportFiles = exportFiles;
     metadata.labelFiles = labelFiles;
     metadata.matchDistance = opts.MatchDistance;
@@ -226,7 +226,7 @@ function out = SNAP_trainSVM(exportFiles, labelFiles, outputClassifierPath, vara
     end
 
     if verbose
-        fprintf('\nSNAP_trainSVM complete:\n');
+        fprintf('\nSNAP_train complete:\n');
         fprintf('  Train samples: %d (real=%d, noise=%d)\n', out.nSamples, out.nReal, out.nNoise);
         if hasValidationSet
             fprintf('  Validation samples: %d (real=%d, noise=%d)\n', validation.nSamples, validation.nReal, validation.nNoise);
@@ -243,7 +243,7 @@ function out = SNAP_trainSVM(exportFiles, labelFiles, outputClassifierPath, vara
 end
 
 function out = runInteractiveTraining()
-    fprintf('\nSNAP_trainSVM interactive setup\n');
+    fprintf('\nSNAP_train interactive setup\n');
     fprintf('Provide train/validation directories containing export MAT files and label files.\n');
 
     matchDistance = str2double(strtrim(input('Match distance in voxels [2]: ', 's')));
@@ -264,7 +264,7 @@ function out = runInteractiveTraining()
 
     fprintf('Discovered %d training pairs and %d validation pairs.\n', numel(trainExports), numel(valExports));
 
-    out = SNAP_trainSVM(trainExports, trainLabels, outputClassifierPath, ...
+    out = SNAP_train(trainExports, trainLabels, outputClassifierPath, ...
         'MatchDistance', matchDistance, ...
         'ValidationExportFiles', valExports, ...
         'ValidationLabelFiles', valLabels, ...

@@ -102,7 +102,7 @@ function success = saveClassifier(filepath, model, features, featureInfo, trainS
     classifierExport.metadata.nCustomFeatures = numel(customExpressions);
     classifierExport.metadata.zScoreNormalized = normParams.standardized;
     
-    % Version for future compatibility
+    % Version marker for classifier format
     classifierExport.version = '3.0';  % Updated for normalization params
     
     % Save
@@ -122,4 +122,3 @@ function success = saveClassifier(filepath, model, features, featureInfo, trainS
         success = false;
     end
 end
-

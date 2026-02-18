@@ -30,9 +30,12 @@ function processed_img = processImage(handles, ch, statusLabel)
                 img_after_deconv = raw_img;
             else
                 psf_raw = double(tiffreadVolume(psf_file));
-                % Crop/pad PSF to match image dimensions (centered on middle frame)
-                psf = cropPSFToImage(psf_raw, size(raw_img));
-                psf = psf / sum(psf(:)); % Normalize
+                psf_size_xy = handles.deconvPSFSizeXYInputs(ch).Value;
+                psf_size_z = handles.deconvPSFSizeZInputs(ch).Value;
+                psf = prepareLoadedPSF(psf_raw, raw_img, psf_size_xy, psf_size_z);
+                if isempty(psf)
+                    warning('Loaded PSF is invalid for channel %d. Skipping deconvolution.', ch);
+                end
             end
         else % 'Generate'
             psf_sigma_xy = handles.deconvPSFSigmaXYInputs(ch).Value;
@@ -43,7 +46,7 @@ function processed_img = processImage(handles, ch, statusLabel)
         end
         
         % Apply deconvolution based on selected method
-        if exist('psf', 'var')
+        if exist('psf', 'var') && ~isempty(psf)
             switch method
                 case 'Lucy-Richardson'
                     iterations = handles.deconvLRIterationsInputs(ch).Value;
@@ -96,14 +99,15 @@ function processed_img = processImage(handles, ch, statusLabel)
         is_scaled = handles.preprocessScaleChecks(ch).Value;
         
         % Apply pre-processing based on the selected mode
-        img_after_preprocess = raw_img; % Start with the raw image
+        % Continue from deconvolution output to preserve pipeline order.
+        img_after_preprocess = img_after_deconv;
 
         if strcmp(mode, 'On Z-Projection')
             proj_type = handles.preprocessProjectionDrops(ch).Value;
-            img_2d = projectZ(raw_img, proj_type);
+            img_2d = projectZ(img_after_deconv, proj_type);
             img_after_preprocess = apply_2d_preproc(img_2d, handles, ch);
         else % 3D or 2D Slice-by-slice
-            img_3d = raw_img;
+            img_3d = img_after_deconv;
             is_3d_mode = strcmp(mode, '3D');
             method = handles.preprocMethodDrops(ch).Value;
 
@@ -271,7 +275,7 @@ function processed_img = processImage(handles, ch, statusLabel)
             img_after_preprocess(img_after_preprocess < 0) = 0;
         end
     else
-        img_after_preprocess = raw_img; % Pass raw if preproc is disabled
+        img_after_preprocess = img_after_deconv; % Pass deconvolved image if preproc is disabled
     end
     
     % Check for abort after preprocessing
@@ -466,61 +470,52 @@ function processed_img = processImage(handles, ch, statusLabel)
         psf = psf / sum(psf(:)); % Normalize
     end
     
-    function psf_out = cropPSFToImage(psf_in, img_size)
-        % Crop or pad PSF to match image dimensions
-        % Both PSF and image are assumed to have their focus at the center Z-frame
-        % psf_in: Input PSF (may be larger or smaller than image)
-        % img_size: Size of the image [rows, cols, slices]
-        
-        psf_size = size(psf_in);
-        
-        % Handle 2D case
-        if length(psf_size) == 2
-            psf_size(3) = 1;
+    function psf = prepareLoadedPSF(psf_in, image_in, radius_xy, radius_z)
+        % Build a compact PSF kernel around the peak intensity.
+        psf = double(psf_in);
+        psf(~isfinite(psf)) = 0;
+        psf(psf < 0) = 0;
+        if isempty(psf)
+            psf = [];
+            return;
         end
-        if length(img_size) == 2
-            img_size(3) = 1;
+
+        if ~isnumeric(radius_xy) || ~isscalar(radius_xy) || ~isfinite(radius_xy)
+            radius_xy = 5;
         end
-        
-        % Find center indices for both PSF and image
-        psf_center = ceil(psf_size / 2);
-        img_center = ceil(img_size / 2);
-        
-        % Calculate how much to crop/pad in each dimension
-        % We want to keep the PSF centered on its middle frame
-        psf_out = zeros(img_size);
-        
-        for dim = 1:3
-            if psf_size(dim) > img_size(dim)
-                % PSF is larger - need to crop centered on middle frame
-                start_idx(dim) = psf_center(dim) - floor(img_size(dim)/2);
-                end_idx(dim) = start_idx(dim) + img_size(dim) - 1;
-            else
-                % PSF is smaller or equal - will pad with zeros
-                start_idx(dim) = 1;
-                end_idx(dim) = psf_size(dim);
+        if ~isnumeric(radius_z) || ~isscalar(radius_z) || ~isfinite(radius_z)
+            radius_z = 3;
+        end
+        radius_xy = max(1, round(abs(radius_xy)));
+        radius_z = max(0, round(abs(radius_z)));
+        is_image_3d = (ndims(image_in) >= 3) && (size(image_in, 3) > 1);
+
+        if is_image_3d
+            if ndims(psf) < 3
+                psf = reshape(psf, size(psf, 1), size(psf, 2), 1);
             end
-        end
-        
-        % Extract the cropped PSF region
-        if all(psf_size >= img_size)
-            % Simple crop case
-            psf_out = psf_in(start_idx(1):end_idx(1), start_idx(2):end_idx(2), start_idx(3):end_idx(3));
+            [~, peak_idx] = max(psf(:));
+            [r0, c0, z0] = ind2sub(size(psf), peak_idx);
+            r1 = max(1, r0 - radius_xy); r2 = min(size(psf, 1), r0 + radius_xy);
+            c1 = max(1, c0 - radius_xy); c2 = min(size(psf, 2), c0 + radius_xy);
+            z1 = max(1, z0 - radius_z);  z2 = min(size(psf, 3), z0 + radius_z);
+            psf = psf(r1:r2, c1:c2, z1:z2);
         else
-            % Need to handle padding - place PSF centered in output
-            out_start = max(1, img_center - psf_center + 1);
-            out_end = min(img_size, out_start + psf_size - 1);
-            
-            psf_start = max(1, psf_center - img_center + 1);
-            psf_end = min(psf_size, psf_start + (out_end - out_start));
-            
-            psf_out(out_start(1):out_end(1), out_start(2):out_end(2), out_start(3):out_end(3)) = ...
-                psf_in(psf_start(1):psf_end(1), psf_start(2):psf_end(2), psf_start(3):psf_end(3));
+            if ndims(psf) >= 3
+                psf = max(psf, [], 3);
+            end
+            [~, peak_idx] = max(psf(:));
+            [r0, c0] = ind2sub(size(psf), peak_idx);
+            r1 = max(1, r0 - radius_xy); r2 = min(size(psf, 1), r0 + radius_xy);
+            c1 = max(1, c0 - radius_xy); c2 = min(size(psf, 2), c0 + radius_xy);
+            psf = psf(r1:r2, c1:c2);
         end
-        
-        % Ensure PSF is normalized
-        if sum(psf_out(:)) > 0
-            psf_out = psf_out / sum(psf_out(:));
+
+        total = sum(psf(:));
+        if ~isfinite(total) || total <= 0
+            psf = [];
+            return;
         end
+        psf = psf ./ total;
     end
 end

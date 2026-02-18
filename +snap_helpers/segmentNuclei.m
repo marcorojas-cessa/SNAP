@@ -115,12 +115,12 @@ function mask_2d = segment2DSlice(img_slice, method, h)
             img_norm = (img_double - min_val) / (max_val - min_val);
             level = graythresh(img_norm);
             mask_2d = imbinarize(img_norm, level);
-        % Note: Old Adaptive case removed - use Auto Local Threshold methods instead
+        % Adaptive segmentation is handled through Auto Local Threshold methods.
         case 'Manual'
             main_method = h.nucSegMainMethodDrop.Value;
             
             if strcmp(main_method, 'Absolute')
-                threshold = h.nucSegAbsoluteInput.Value;
+                threshold = h.nucSegParam1Input.Value;
                 
             elseif strcmp(main_method, 'Mean') || strcmp(main_method, 'Median')
                 % Get center statistic
@@ -134,10 +134,10 @@ function mask_2d = segment2DSlice(img_slice, method, h)
                 sub_method = h.nucSegSubMethodDrop.Value;
                 if strcmp(sub_method, 'Std Multiplier')
                     img_std = std(img_double(:));
-                    k = h.nucSegStdMultiplierInput.Value;
+                    k = h.nucSegParam1Input.Value;
                     threshold = img_center + k * img_std;
                 else % Absolute Offset
-                    offset = h.nucSegOffsetInput.Value;
+                    offset = h.nucSegParam1Input.Value;
                     threshold = img_center + offset;
                 end
                 
@@ -178,12 +178,12 @@ function mask_3d = segment3DVolume(img_volume, method, h)
             level_norm = graythresh(img_double(:));
             % Apply threshold to the entire volume
             mask_3d = imbinarize(img_double, level_norm * (max(img_double(:)) - min(img_double(:))) + min(img_double(:)));
-        % Note: Old Adaptive case removed - use Auto Local Threshold methods instead
+        % Adaptive segmentation is handled through Auto Local Threshold methods.
         case 'Manual'
             main_method = h.nucSegMainMethodDrop.Value;
             
             if strcmp(main_method, 'Absolute')
-                threshold = h.nucSegAbsoluteInput.Value;
+                threshold = h.nucSegParam1Input.Value;
                 
             elseif strcmp(main_method, 'Mean') || strcmp(main_method, 'Median')
                 % Get center statistic
@@ -197,10 +197,10 @@ function mask_3d = segment3DVolume(img_volume, method, h)
                 sub_method = h.nucSegSubMethodDrop.Value;
                 if strcmp(sub_method, 'Std Multiplier')
                     img_std = std(img_double(:));
-                    k = h.nucSegStdMultiplierInput.Value;
+                    k = h.nucSegParam1Input.Value;
                     threshold = img_center + k * img_std;
                 else % Absolute Offset
-                    offset = h.nucSegOffsetInput.Value;
+                    offset = h.nucSegParam1Input.Value;
                     threshold = img_center + offset;
                 end
                 
@@ -515,349 +515,6 @@ function solidity = calculateSolidity(obj_mask, is_3d)
     solidity = max(0, min(1.0, solidity));
 end
 
-
-function filtered_mask = applyCircularityFilter(nuc_mask, min_circularity)
-    % Apply circularity (2D) or sphericity (3D) filtering
-    % NOTE: This function is now deprecated - filtering is done in applyNucleiSizeFilter
-    
-    if ndims(nuc_mask) == 3
-        % 3D sphericity filtering
-        filtered_mask = applySphericity3D(nuc_mask, min_circularity);
-    else
-        % 2D circularity filtering
-        filtered_mask = applyCircularity2D(nuc_mask, min_circularity);
-    end
-end
-
-function filtered_mask = applyCircularity2D(nuc_mask, min_circularity)
-    % Apply 2D circularity filtering
-    % Circularity = 4π × Area / Perimeter²
-    
-    filtered_mask = false(size(nuc_mask));
-    
-    % Label connected components
-    cc = bwconncomp(nuc_mask, 8);
-    
-    for i = 1:cc.NumObjects
-        % Create mask for this object
-        obj_mask = false(size(nuc_mask));
-        obj_mask(cc.PixelIdxList{i}) = true;
-        
-        % Calculate properties
-        props = regionprops(obj_mask, 'Area', 'Perimeter');
-        
-        if ~isempty(props) && props.Area > 0 && props.Perimeter > 0
-            % Calculate circularity
-            circularity = 4 * pi * props.Area / (props.Perimeter^2);
-            circularity = min(1.0, circularity); % Cap at 1.0
-            
-            % Keep object if circularity meets threshold
-            if circularity >= min_circularity
-                filtered_mask(cc.PixelIdxList{i}) = true;
-            end
-        end
-    end
-end
-
-function filtered_mask = applySphericity3D(nuc_mask, min_sphericity)
-    % Apply 3D sphericity filtering
-    % Sphericity = π^(1/3) × (6 × Volume)^(2/3) / Surface Area
-    
-    filtered_mask = false(size(nuc_mask));
-    
-    % Label connected components
-    cc = bwconncomp(nuc_mask, 26);
-    
-    for i = 1:cc.NumObjects
-        % Create mask for this object
-        obj_mask = false(size(nuc_mask));
-        obj_mask(cc.PixelIdxList{i}) = true;
-        
-        % Calculate volume (number of voxels)
-        volume = length(cc.PixelIdxList{i});
-        
-        if volume > 0
-            % Calculate surface area using isosurface
-            try
-                % Smooth the object slightly to get better surface area estimation
-                obj_smooth = smooth3(double(obj_mask), 'gaussian', [3 3 3]);
-                
-                % Calculate surface area using isosurface
-                [faces, vertices] = isosurface(obj_smooth, 0.5);
-                
-                if ~isempty(faces) && size(faces, 1) > 0
-                    % Calculate surface area from triangular faces
-                    surface_area = 0;
-                    for j = 1:size(faces, 1)
-                        v1 = vertices(faces(j, 1), :);
-                        v2 = vertices(faces(j, 2), :);
-                        v3 = vertices(faces(j, 3), :);
-                        
-                        % Calculate triangle area using cross product
-                        edge1 = v2 - v1;
-                        edge2 = v3 - v1;
-                        triangle_area = 0.5 * norm(cross(edge1, edge2));
-                        surface_area = surface_area + triangle_area;
-                    end
-                    
-                    if surface_area > 0
-                        % Calculate sphericity
-                        sphericity = (pi^(1/3)) * ((6 * volume)^(2/3)) / surface_area;
-                        
-                        % Keep object if sphericity meets threshold
-                        if sphericity >= min_sphericity
-                            filtered_mask(cc.PixelIdxList{i}) = true;
-                        end
-                    else
-                        % If surface area calculation fails, keep the object
-                        filtered_mask(cc.PixelIdxList{i}) = true;
-                    end
-                else
-                    % If isosurface fails, keep the object
-                    filtered_mask(cc.PixelIdxList{i}) = true;
-                end
-            catch
-                % If any calculation fails, keep the object to be safe
-                filtered_mask(cc.PixelIdxList{i}) = true;
-            end
-        end
-    end
-end
-
-% ================== ADVANCED SEGMENTATION METHODS ==================
-
-function [threshold_map, mean_threshold] = adaptiveLocalThreshold(img, window_size)
-    % Adaptive Local Thresholding - calculates local threshold for each pixel
-    % Based on local neighborhood statistics
-    
-    img_double = double(img);
-    [rows, cols] = size(img_double);
-    threshold_map = zeros(size(img_double));
-    
-    % Ensure window size is odd
-    if mod(window_size, 2) == 0
-        window_size = window_size + 1;
-    end
-    
-    half_win = floor(window_size / 2);
-    
-    % Calculate local threshold for each pixel
-    for i = 1:rows
-        for j = 1:cols
-            % Define local window bounds
-            row_start = max(1, i - half_win);
-            row_end = min(rows, i + half_win);
-            col_start = max(1, j - half_win);
-            col_end = min(cols, j + half_win);
-            
-            % Extract local neighborhood
-            local_region = img_double(row_start:row_end, col_start:col_end);
-            
-            % Calculate local statistics
-            local_mean = mean(local_region(:));
-            local_std = std(local_region(:));
-            
-            % Adaptive threshold: mean + 0.5*std (conservative)
-            threshold_map(i, j) = local_mean + 0.5 * local_std;
-        end
-    end
-    
-    mean_threshold = mean(threshold_map(:));
-end
-
-function threshold = histogramValleyThreshold(img)
-    % Histogram Valley Detection - finds optimal threshold by locating
-    % valleys (local minima) in the intensity histogram
-    
-    img_double = double(img(:));
-    
-    % Calculate histogram with appropriate number of bins
-    num_bins = min(256, round(sqrt(length(img_double))));
-    [counts, bin_centers] = hist(img_double, num_bins);
-    
-    % Smooth histogram to reduce noise
-    if length(counts) >= 5
-        counts = smooth(counts, 5);
-    end
-    
-    % Find local minima (valleys)
-    valleys = [];
-    for i = 2:length(counts)-1
-        if counts(i) < counts(i-1) && counts(i) < counts(i+1)
-            valleys(end+1) = i;
-        end
-    end
-    
-    if isempty(valleys)
-        % Fallback: use Otsu's method
-        img_norm = (img_double - min(img_double)) / (max(img_double) - min(img_double));
-        level = graythresh(img_norm);
-        threshold = level * (max(img_double) - min(img_double)) + min(img_double);
-    else
-        % Use the first significant valley (usually background/foreground separation)
-        valley_idx = valleys(1);
-        threshold = bin_centers(valley_idx);
-    end
-end
-
-% ================== VISUALIZATION FUNCTIONS ==================
-
-function showPercentileVisualization(img, percentile_val, threshold)
-    % Show histogram with percentile line and threshold visualization
-    try
-        figure('Name', 'Percentile Thresholding Analysis', 'NumberTitle', 'off');
-        
-        subplot(2,2,1);
-        imshow(img, []);
-        title('Original Image');
-        
-        subplot(2,2,2);
-        binary_img = img > threshold;
-        imshow(binary_img);
-        title(sprintf('Thresholded (%.1f%% = %.1f)', percentile_val, threshold));
-        
-        subplot(2,2,[3,4]);
-        img_vec = img(:);
-        histogram(img_vec, 100, 'Normalization', 'probability');
-        hold on;
-        
-        % Add percentile line
-        xline(threshold, 'r-', 'LineWidth', 2, ...
-            'Label', sprintf('%.1f%% = %.1f', percentile_val, threshold));
-            
-        % Add statistics
-        img_mean = mean(img_vec);
-        img_median = median(img_vec);
-        xline(img_mean, 'b--', 'LineWidth', 1, 'Label', sprintf('Mean = %.1f', img_mean));
-        xline(img_median, 'g--', 'LineWidth', 1, 'Label', sprintf('Median = %.1f', img_median));
-        
-        xlabel('Intensity');
-        ylabel('Probability');
-        title('Intensity Histogram with Percentile Threshold');
-        legend('Location', 'best');
-        grid on;
-        
-    catch ME
-        fprintf('Warning: Could not display percentile visualization: %s\n', ME.message);
-    end
-end
-
-function showAdaptiveLocalVisualization(img, threshold_map, window_size)
-    % Show adaptive local thresholding results
-    try
-        figure('Name', 'Adaptive Local Thresholding Analysis', 'NumberTitle', 'off');
-        
-        subplot(2,3,1);
-        imshow(img, []);
-        title('Original Image');
-        
-        subplot(2,3,2);
-        imshow(threshold_map, []);
-        title(sprintf('Threshold Map (Window=%d)', window_size));
-        colorbar;
-        
-        subplot(2,3,3);
-        binary_img = img > threshold_map;
-        imshow(binary_img);
-        title('Adaptive Thresholded Result');
-        
-        subplot(2,3,4);
-        % Show difference between image and threshold
-        diff_img = img - threshold_map;
-        imshow(diff_img, []);
-        title('Image - Threshold Map');
-        colorbar;
-        
-        subplot(2,3,5);
-        histogram(threshold_map(:), 50);
-        xlabel('Threshold Value');
-        ylabel('Frequency');
-        title('Threshold Distribution');
-        grid on;
-        
-        subplot(2,3,6);
-        % Show threshold profile along middle row
-        mid_row = round(size(img, 1) / 2);
-        plot(img(mid_row, :), 'b-', 'LineWidth', 1.5, 'DisplayName', 'Image');
-        hold on;
-        plot(threshold_map(mid_row, :), 'r-', 'LineWidth', 1.5, 'DisplayName', 'Threshold');
-        xlabel('Column');
-        ylabel('Intensity');
-        title('Middle Row Profile');
-        legend('Location', 'best');
-        grid on;
-        
-    catch ME
-        fprintf('Warning: Could not display adaptive local visualization: %s\n', ME.message);
-    end
-end
-
-function showHistogramAnalysisVisualization(img, threshold)
-    % Show histogram analysis with valley detection
-    try
-        figure('Name', 'Histogram Valley Analysis', 'NumberTitle', 'off');
-        
-        subplot(2,2,1);
-        if ndims(img) == 3
-            imshow(max(img, [], 3), []);
-            title('Max Projection');
-        else
-            imshow(img, []);
-            title('Original Image');
-        end
-        
-        subplot(2,2,2);
-        binary_img = img > threshold;
-        if ndims(binary_img) == 3
-            imshow(max(binary_img, [], 3));
-            title('Thresholded (Max Proj)');
-        else
-            imshow(binary_img);
-            title('Thresholded Result');
-        end
-        
-        subplot(2,2,[3,4]);
-        img_vec = img(:);
-        
-        % Calculate and plot histogram
-        num_bins = min(256, round(sqrt(length(img_vec))));
-        [counts, bin_centers] = hist(img_vec, num_bins);
-        
-        % Smooth for valley detection
-        if length(counts) >= 5
-            counts_smooth = smooth(counts, 5);
-        else
-            counts_smooth = counts;
-        end
-        
-        bar(bin_centers, counts, 'FaceAlpha', 0.7, 'DisplayName', 'Original Histogram');
-        hold on;
-        plot(bin_centers, counts_smooth, 'r-', 'LineWidth', 2, 'DisplayName', 'Smoothed');
-        
-        % Mark threshold
-        xline(threshold, 'g-', 'LineWidth', 3, ...
-            'Label', sprintf('Valley Threshold = %.1f', threshold));
-            
-        % Find and mark valleys
-        valleys = [];
-        for i = 2:length(counts_smooth)-1
-            if counts_smooth(i) < counts_smooth(i-1) && counts_smooth(i) < counts_smooth(i+1)
-                valleys(end+1) = i;
-                plot(bin_centers(i), counts_smooth(i), 'ro', 'MarkerSize', 8, ...
-                    'MarkerFaceColor', 'red');
-            end
-        end
-        
-        xlabel('Intensity');
-        ylabel('Count');
-        title(sprintf('Histogram Valley Detection (%d valleys found)', length(valleys)));
-        legend('Location', 'best');
-        grid on;
-        
-    catch ME
-        fprintf('Warning: Could not display histogram analysis visualization: %s\n', ME.message);
-    end
-end
 
 function mask = applyLocalThreshold(img, algorithm, window_size, h, already_normalized)
     % Apply local thresholding algorithms matching ImageJ's Auto Local Threshold plugin
@@ -1406,7 +1063,7 @@ function [filtered_mask, filtered_labels] = applyNucleiEdgeExclusionWithLabels(n
     end
 end
 
-%% Helper Functions for SNAP_batch compatibility
+%% Shared helper utilities
 
 function val = getScalar(input)
     % Ensure value is a proper scalar (handle cells, arrays, etc.)

@@ -67,9 +67,9 @@ fprintf('Fit Method: %s\n', fit_result.fitMethod);
 fprintf('===================================\n\n');
 
 switch fit_result.fitMethod
-    case {'1D (X,Y,Z)', '1D (X,Y,Z) Gaussian'}
+    case '1D (X,Y,Z) Gaussian'
         plot_1D_fits(mainGrid, fit_result);
-    case {'2D (XY) + 1D (Z)', '2D (XY) + 1D (Z) Gaussian'}
+    case '2D (XY) + 1D (Z) Gaussian'
         plot_2D_plus_1D_fits(mainGrid, fit_result);
     case {'3D Gaussian', 'Distorted 3D Gaussian'}
         plot_3D_fits(mainGrid, fit_result);
@@ -2021,7 +2021,6 @@ function show_2d_vector_map(parent, result, data, channelColor)
         plot_2d_radial_symmetry(parent, result, data, channelColor);
     end
 end
-
 
 
 

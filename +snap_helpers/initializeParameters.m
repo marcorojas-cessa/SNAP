@@ -133,7 +133,7 @@ function defaultParams = initializeParameters(Nmax)
     defaultParams.nucSegAlgParam1 = 25; % Default radius value
     defaultParams.nucSegAlgParam2 = 0;
     
-    % Individual algorithm parameters (for backward compatibility)
+    % Individual algorithm parameters
     defaultParams.nucSegBernsenContrast = 15;
     defaultParams.nucSegMeanC = 0;
     defaultParams.nucSegMedianC = 0;
@@ -149,7 +149,7 @@ function defaultParams = initializeParameters(Nmax)
     defaultParams.nucSegAlgParam1Default = true;
     defaultParams.nucSegAlgParam2Default = true;
     
-    % Individual default states (for backward compatibility)
+    % Individual default states
     defaultParams.nucSegBernsenContrastDefault = true;
     defaultParams.nucSegMeanCDefault = true;
     defaultParams.nucSegMedianCDefault = true;

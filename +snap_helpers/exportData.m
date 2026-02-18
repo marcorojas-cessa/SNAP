@@ -299,7 +299,7 @@ outputPath = fullfile(exportDir, 'export_nuclei');
 
 % Prepare options
 exportOptions = struct();
-exportOptions.is_3d = strcmp(handles.nucSegModeDrop.Value, 'On 3D Volume');
+exportOptions.is_3d = strcmp(handles.nucSegModeDrop.Value, '3D');
 exportOptions.xy_spacing = handles.nucXYSpacingInput.Value;
 exportOptions.z_spacing = handles.nucZSpacingInput.Value;
 exportOptions.image_name = '';  % No image name for single SNAP export
@@ -308,136 +308,8 @@ exportOptions.image_name = '';  % No image name for single SNAP export
 if nargin >= 4 && ~isempty(sharedMeasurements) && isfield(sharedMeasurements, 'nucleiData')
     snap_helpers.exportNucleiDataStandardized(nucleus_labels, nuclei_mask, outputPath, exportOptions, sharedMeasurements.nucleiData);
 else
-snap_helpers.exportNucleiDataStandardized(nucleus_labels, nuclei_mask, outputPath, exportOptions);
+    snap_helpers.exportNucleiDataStandardized(nucleus_labels, nuclei_mask, outputPath, exportOptions);
 end
-
-% OLD CODE BELOW - Now handled by exportNucleiDataStandardized
-return;
-
-%%%% LEGACY CODE (for reference, will be removed) %%%%
-filename = fullfile(exportDir, sprintf('nuclei_data_%s_OLD.mat', timestamp));
-
-% Prepare nuclei data structure
-nucleiData = struct();
-nucleiData.exportTimestamp = timestamp;
-nucleiData.exportDate = datestr(now);
-
-% Binary mask (what's shown as overlay)
-nucleiData.binary_mask = nuclei_mask;
-
-% Labeled mask with nucleus IDs
-if ~isempty(nucleus_labels) && isfield(nucleus_labels, 'labeled_mask')
-    nucleiData.labeled_mask = nucleus_labels.labeled_mask;
-    nucleiData.nucleus_labels = nucleus_labels;
-    
-    % Add nucleus information
-    nucleiData.num_nuclei = nucleus_labels.num_nuclei;
-    nucleiData.centroids_3d = nucleus_labels.centroids_3d;
-    
-    % Create ROI information for mapping signals to nuclei
-    nucleiData.roi_info = struct();
-    nucleiData.roi_info.description = 'Each nucleus ROI is labeled with its ID number for signal mapping';
-    nucleiData.roi_info.nucleus_ids = 1:nucleus_labels.num_nuclei;
-    
-    if isfield(nucleus_labels, 'connected_components')
-        nucleiData.roi_info.pixel_lists = nucleus_labels.connected_components.PixelIdxList;
-    end
-    
-    fprintf('Exported %d labeled nuclei ROIs\n', nucleus_labels.num_nuclei);
-else
-    nucleiData.labeled_mask = [];
-    nucleiData.nucleus_labels = [];
-    fprintf('Warning: No nucleus labeling information available\n');
-end
-
-% Add image dimensions and spacing information
-if isfield(handles, 'rawNuclei')
-    nucleiData.image_size = size(handles.rawNuclei);
-end
-
-if isfield(handles, 'nucXYSpacingInput') && isvalid(handles.nucXYSpacingInput)
-    nucleiData.xy_spacing = handles.nucXYSpacingInput.Value;
-end
-
-if isfield(handles, 'nucZSpacingInput') && isvalid(handles.nucZSpacingInput)
-    nucleiData.z_spacing = handles.nucZSpacingInput.Value;
-end
-
-% Add segmentation parameters used
-nucleiData.segmentation_parameters = struct();
-if isfield(handles, 'nucSegModeDrop') && isvalid(handles.nucSegModeDrop)
-    nucleiData.segmentation_parameters.mode = handles.nucSegModeDrop.Value;
-end
-if isfield(handles, 'nucSegMainMethodDrop') && isvalid(handles.nucSegMainMethodDrop)
-    nucleiData.segmentation_parameters.method = handles.nucSegMainMethodDrop.Value;
-end
-
-% Add metadata for cross-referencing
-nucleiData.metadata = struct();
-nucleiData.metadata.description = 'Nucleus segmentation data with binary and labeled masks';
-nucleiData.metadata.companion_exports = 'For signal analysis, see Channel Data export; for nucleus-signal associations, see Clustered Signal Data export';
-nucleiData.metadata.note = 'This export focuses on nucleus morphology. Combine with Channel/Clustered exports for complete analysis.';
-
-save(filename, 'nucleiData');
-fprintf('Nuclei data exported to: %s\n', filename);
-
-% Also create a summary text file
-txtFilename = fullfile(exportDir, sprintf('nuclei_summary_%s.txt', timestamp));
-exportNucleiSummary(nucleiData, txtFilename);
-end
-
-function exportNucleiSummary(nucleiData, filename)
-% Export a human-readable summary of nuclei data
-fid = fopen(filename, 'w');
-if fid == -1
-    warning('Could not create nuclei summary file: %s', filename);
-    return;
-end
-
-fprintf(fid, 'Nuclei Segmentation Export Summary\n');
-fprintf(fid, 'Generated: %s\n\n', datestr(now));
-
-if ~isempty(nucleiData.binary_mask)
-    fprintf(fid, 'Image Dimensions: %s\n', mat2str(size(nucleiData.binary_mask)));
-end
-
-if isfield(nucleiData, 'num_nuclei') && ~isempty(nucleiData.num_nuclei)
-    fprintf(fid, 'Number of Nuclei: %d\n', nucleiData.num_nuclei);
-else
-    fprintf(fid, 'Number of Nuclei: Not available (binary mask only)\n');
-end
-
-if isfield(nucleiData, 'xy_spacing')
-    fprintf(fid, 'XY Spacing: %.3f µm/pixel\n', nucleiData.xy_spacing);
-end
-
-if isfield(nucleiData, 'z_spacing')
-    fprintf(fid, 'Z Spacing: %.3f µm/slice\n', nucleiData.z_spacing);
-end
-
-if isfield(nucleiData, 'segmentation_parameters')
-    fprintf(fid, '\nSegmentation Parameters:\n');
-    params = nucleiData.segmentation_parameters;
-    fields = fieldnames(params);
-    for i = 1:length(fields)
-        fprintf(fid, '  %s: %s\n', fields{i}, char(params.(fields{i})));
-    end
-end
-
-if isfield(nucleiData, 'roi_info') && ~isempty(nucleiData.roi_info)
-    fprintf(fid, '\nROI Information:\n');
-    fprintf(fid, '  %s\n', nucleiData.roi_info.description);
-    fprintf(fid, '  Nucleus IDs: %s\n', mat2str(nucleiData.roi_info.nucleus_ids));
-end
-
-fprintf(fid, '\nData Files:\n');
-fprintf(fid, '  binary_mask: Binary segmentation mask (logical array)\n');
-fprintf(fid, '  labeled_mask: Labeled mask with nucleus IDs (integer array)\n');
-fprintf(fid, '  nucleus_labels: Complete labeling structure with centroids and metadata\n');
-fprintf(fid, '  roi_info: ROI information for signal-to-nucleus mapping\n');
-
-fclose(fid);
-fprintf('Nuclei summary exported to: %s\n', filename);
 end
 
 function exportChannelData(handles, exportDir, timestamp)
@@ -649,54 +521,6 @@ else
 end
 
 fprintf('Nuclei signal composition export complete.\n');
-end
-
-function signal_indices = findSignalsInNucleus(maxima_coords, nucleus_pixel_indices, nuclei_mask, nuc_idx)
-% LEGACY FUNCTION - Kept for backward compatibility
-% NEW CODE SHOULD USE getSignalsInNucleus from analyzeNucleiSignalComposition.m
-%
-% Find which signals (by index) fall within this nucleus
-% COORDINATE CONVENTION: Uses ARRAY CONVENTION
-%   maxima_coords are [row, col, slice]
-%   Array access: nucleiMask(row, col, slice) - DIRECT indexing
-
-    signal_indices = [];
-    
-    if isempty(maxima_coords)
-        return;
-    end
-    
-    % Create a binary mask for this specific nucleus
-    nucleus_mask = false(size(nuclei_mask));
-    nucleus_mask(nucleus_pixel_indices) = true;
-    
-    % Check each signal's coordinates (ARRAY CONVENTION)
-    for i = 1:size(maxima_coords, 1)
-        row = round(maxima_coords(i, 1));
-        col = round(maxima_coords(i, 2));
-        slice = round(maxima_coords(i, 3));
-        
-        % Handle 2D/3D compatibility
-        if ndims(nucleus_mask) == 2
-            % 2D nucleus mask - only check row, col
-            if row >= 1 && row <= size(nucleus_mask, 1) && col >= 1 && col <= size(nucleus_mask, 2)
-                % DIRECT array access with ARRAY CONVENTION
-                if nucleus_mask(row, col)
-                    signal_indices(end+1) = i;
-                end
-            end
-        else
-            % 3D nucleus mask - check row, col, slice
-            if row >= 1 && row <= size(nucleus_mask, 1) && ...
-               col >= 1 && col <= size(nucleus_mask, 2) && ...
-               slice >= 1 && slice <= size(nucleus_mask, 3)
-                % DIRECT array access with ARRAY CONVENTION
-                if nucleus_mask(row, col, slice)
-                    signal_indices(end+1) = i;
-                end
-            end
-        end
-    end
 end
 
 function exportParameters(handles, exportDir, timestamp)
@@ -1495,8 +1319,8 @@ try
     if isfield(handles, 'nucBgCorrProjectionDrop')
         lastUsed.nucBgCorrProjection = handles.nucBgCorrProjectionDrop.Value;
     end
-    if isfield(handles, 'nucBgCorrClipCheck')
-        lastUsed.nucBgCorrClipAtZero = handles.nucBgCorrClipCheck.Value;
+    if isfield(handles, 'nucBgCorrClipChecks')
+        lastUsed.nucBgCorrClipAtZero = handles.nucBgCorrClipChecks.Value;
     end
     
     % === NUCLEI SEGMENTATION ===
@@ -1515,8 +1339,8 @@ try
     if isfield(handles, 'nucSegSubMethodDrop')
         lastUsed.nucSegSubMethod = handles.nucSegSubMethodDrop.Value;
     end
-    if isfield(handles, 'nucSegAbsoluteThresholdInput')
-        lastUsed.nucSegAbsoluteThreshold = handles.nucSegAbsoluteThresholdInput.Value;
+    if isfield(handles, 'nucSegAbsoluteInput')
+        lastUsed.nucSegAbsoluteThreshold = handles.nucSegAbsoluteInput.Value;
     end
     if isfield(handles, 'nucSegStdMultiplierInput')
         lastUsed.nucSegStdMultiplier = handles.nucSegStdMultiplierInput.Value;

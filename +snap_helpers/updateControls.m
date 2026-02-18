@@ -147,6 +147,7 @@ function updateControls(fig_handle)
     handles.isUpdatingControls = false;
     guidata(handles.fig, handles);
     enforcePreviewModes(handles); % Enforce preview modes after all updates
+
 end
 
 % --- Nested Helper Functions ---
@@ -306,7 +307,7 @@ function updateGaussianFitControls(channel_idx, handles)
     fit_drop = handles.gaussFitMethodDrop(channel_idx);
     is_3d = strcmp(handles.zSpacingInputs(channel_idx).Enable, 'on');
     if ~is_3d
-        if any(strcmp(fit_drop.Value, {'2D (XY) + 1D (Z) Gaussian', '2D (XY) + 1D (Z)', '3D Gaussian', 'Distorted 3D Gaussian'}))
+        if any(strcmp(fit_drop.Value, {'2D (XY) + 1D (Z) Gaussian', '3D Gaussian', 'Distorted 3D Gaussian'}))
             fit_drop.Value = '1D (X,Y,Z) Gaussian';
         end
         fit_drop.Items = {'1D (X,Y,Z) Gaussian', 'Radial Symmetry'};
@@ -356,7 +357,9 @@ function updateProcessingModeControls(channel_idx, category, handles)
     if strcmp(category, 'preprocess')
         wavelet_controls = findall(handles.channelTabs(channel_idx), 'Tag', 'wavelet_control');
         set(wavelet_controls, 'Enable', matlab.lang.OnOffSwitchState(~is_3d_mode));
-        if is_3d_mode, handles.waveletDenoiseChecks(channel_idx).Value = false; end
+        if is_3d_mode && isfield(handles, 'waveletDenoiseChecks')
+            handles.waveletDenoiseChecks(channel_idx).Value = false;
+        end
     end
 end
 
@@ -828,10 +831,11 @@ function updateSegmentationParameterControls(handles, main_method)
         case 'Absolute'
             handles.nucSegParam1Label.Text = 'Threshold:';
             handles.nucSegParam1Input.Tooltip = 'Direct intensity threshold. Pixels above this value = nuclei. Higher values = smaller nuclei regions.';
-            handles.nucSegParam1Input.Value = handles.nucSegAbsoluteInput.Value;
             handles.nucSegParam1Input.Visible = 'on';
             handles.nucSegParam2Label.Visible = 'off';
-            handles.nucSegParam2Input.Visible = 'off';
+            if isfield(handles, 'nucSegParam2Input')
+                handles.nucSegParam2Input.Visible = 'off';
+            end
             
         case {'Mean', 'Median'}
             if isfield(handles, 'nucSegSubMethodDrop')
@@ -839,16 +843,16 @@ function updateSegmentationParameterControls(handles, main_method)
                 if strcmp(sub_method, 'Std Multiplier')
                     handles.nucSegParam1Label.Text = 'Std×:';
                     handles.nucSegParam1Input.Tooltip = 'Standard deviation multiplier. Threshold = mean/median + k×std. Higher k = less sensitive. Range: 1.5-3.0';
-                    handles.nucSegParam1Input.Value = handles.nucSegStdMultiplierInput.Value;
                 else % Absolute Offset
                     handles.nucSegParam1Label.Text = 'Offset:';
                     handles.nucSegParam1Input.Tooltip = 'Fixed intensity offset. Threshold = mean/median + offset. Use when nuclei are consistently X units brighter than background.';
-                    handles.nucSegParam1Input.Value = handles.nucSegOffsetInput.Value;
                 end
             end
             handles.nucSegParam1Input.Visible = 'on';
             handles.nucSegParam2Label.Visible = 'off';
-            handles.nucSegParam2Input.Visible = 'off';
+            if isfield(handles, 'nucSegParam2Input')
+                handles.nucSegParam2Input.Visible = 'off';
+            end
             
         case 'Auto Local Threshold'
             handles.nucSegParam1Label.Text = 'Radius:';
@@ -857,7 +861,9 @@ function updateSegmentationParameterControls(handles, main_method)
             handles.nucSegParam1Input.Visible = 'on';
             handles.nucSegParam2Label.Text = '(pixels)';
             handles.nucSegParam2Label.Visible = 'on';
-            handles.nucSegParam2Input.Visible = 'off';
+            if isfield(handles, 'nucSegParam2Input')
+                handles.nucSegParam2Input.Visible = 'off';
+            end
     end
 end
 

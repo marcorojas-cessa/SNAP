@@ -11,7 +11,7 @@ function exportNucleiSignalDataStandardized(outputPath, imageName, nucleusLabels
 %
 %   1. NUCLEUS DATA: From computeNucleusMeasurements()
 %      - If precomputedMeasurements provided → use it (CONSISTENCY MODE)
-%      - If not provided → compute now (BACKWARD COMPATIBILITY)
+%      - If not provided → compute now (ON-DEMAND MODE)
 %      - Result: Nucleus data IDENTICAL to exportNucleiDataStandardized()
 %
 %   2. SIGNAL DATA: From signalComposition.nuclei_data
@@ -70,10 +70,8 @@ if ~isfield(options, 'xy_spacing'), options.xy_spacing = []; end
 if ~isfield(options, 'z_spacing'), options.z_spacing = []; end
 
 has_spacing = ~isempty(options.xy_spacing) && options.xy_spacing > 0;
-if options.is_3d && (~isempty(options.z_spacing) && options.z_spacing > 0)
-    has_spacing = has_spacing;
-else
-    has_spacing = false;
+if options.is_3d
+    has_spacing = has_spacing && ~isempty(options.z_spacing) && options.z_spacing > 0;
 end
 
 %% GET NUCLEUS MEASUREMENTS (use pre-computed if available for consistency)
@@ -101,10 +99,9 @@ end
 if nargin >= 7 && ~isempty(precomputedMeasurements)
     % CONSISTENCY MODE: Use pre-computed measurements
     nucleiData = precomputedMeasurements;
-    fprintf('    Using pre-computed measurements (ensures consistency)\n');
 else
-    % STANDALONE MODE: Compute now (backward compatibility)
-nucleiData = snap_helpers.computeNucleusMeasurements(nucleusLabels, nucleiMask, options);
+    % ON-DEMAND MODE: Compute now
+    nucleiData = snap_helpers.computeNucleusMeasurements(nucleusLabels, nucleiMask, options);
 end
 
 %% Add data consistency metadata
@@ -252,6 +249,10 @@ save(matFilename, '-struct', 'matData');
 %% Export SIMPLE CSV (one row per nucleus) - COMPLETE NUCLEUS DATA
 csvSimpleFilename = [outputPath '_simple.csv'];
 fid = fopen(csvSimpleFilename, 'w');
+if fid == -1
+    warning('Could not create nuclei-signal simple CSV export file: %s', csvSimpleFilename);
+    return;
+end
 
 % Use SHARED helper to build nucleus column list (ZERO REDUNDANCY!)
 % This ensures columns EXACTLY match exportNucleiDataStandardized()
@@ -301,6 +302,10 @@ fclose(fid);
 %% Export EXPANDED CSV (one row per signal) - COMPLETE NUCLEUS + SIGNAL DATA
 csvExpandedFilename = [outputPath '_expanded.csv'];
 fid = fopen(csvExpandedFilename, 'w');
+if fid == -1
+    warning('Could not create nuclei-signal expanded CSV export file: %s', csvExpandedFilename);
+    return;
+end
 
 % Build header using SHARED helpers (ZERO REDUNDANCY!)
 % This ensures columns EXACTLY match individual exports
@@ -400,6 +405,10 @@ fclose(fid);
 %% Export TXT receipt
 txtFilename = [outputPath '_receipt.txt'];
 fid = fopen(txtFilename, 'w');
+if fid == -1
+    warning('Could not create nuclei-signal export receipt file: %s', txtFilename);
+    return;
+end
 
 fprintf(fid, '========================================\n');
 fprintf(fid, 'SNAP Nuclei-Signal Composition Analysis\n');
@@ -460,12 +469,3 @@ fprintf(fid, '%s\n', datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
 fclose(fid);
     % Receipt saved silently
 end
-
-function str = formatValue(val)
-    if isnan(val) || isempty(val)
-        str = 'NaN';
-    else
-        str = sprintf('%.4f', val);
-    end
-end
-

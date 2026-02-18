@@ -68,5 +68,6 @@ function loadFile(fig, fileType, varargin)
     
     % Save the updated handles structure
     guidata(fig, handles);
-    % No updateControls call here - let it happen when user clicks "Update Previews"
+
+    % Preview refresh is manual-only; user triggers via "Update Previews".
 end

@@ -24,6 +24,10 @@
 - **Machine learning classification** to distinguish real spots from noise
 - **High-throughput batch processing** for large datasets
 
+Current UI behavior is intentionally manual and deterministic:
+- Previews are updated only when you click **Update Previews**
+- Processing can be interrupted with **Abort Processing**, including long maxima fitting runs
+
 SNAP is particularly suited for applications in:
 - Single-molecule localization microscopy
 - FISH (Fluorescence In Situ Hybridization) analysis
@@ -73,9 +77,9 @@ SNAP is particularly suited for applications in:
 - Annotated visualizations
 
 ### ⚡ **Performance Optimized**
-- Vectorized local thresholding (10-50x faster than pixel-by-pixel)
 - Efficient batch processing with progress tracking
-- Preview caching for responsive UI
+- Preview/runtime caching for responsive interaction
+- Abort-aware maxima fitting for safer long runs
 
 ---
 
@@ -119,8 +123,9 @@ SNAP
 % 1. Load nuclei image (Browse → Nuclei)
 % 2. Load fluorescence channel(s) (Browse → Channel 1, 2, ...)
 % 3. Configure processing parameters in each tab
-% 4. Click "Update Previews" to see results
-% 5. Export data when satisfied
+% 4. Click "Update Previews" to run processing and refresh all previews
+% 5. Use "Abort Processing" any time to stop long runs
+% 6. Export data when satisfied
 ```
 
 ### Batch Processing
@@ -147,6 +152,14 @@ SNAP_prepare
 % Open the classification training interface
 SNAP_classify
 ```
+
+---
+
+## Important Behavior
+
+- **No auto preview updates**: SNAP does not auto-refresh previews while parameters change.
+- **Abort is active during fitting**: abort requests are checked during chunked fitting and inside per-maxima fitting loops.
+- **No autosave on close**: export **Parameters** to save a reproducible configuration.
 
 ---
 
@@ -245,17 +258,20 @@ SNAP/
 ├── SNAP_batch.m              # Batch processing (GUI + CLI)
 ├── SNAP_prepare.m            # Multi-channel format converter
 ├── SNAP_classify.m           # SVM classifier training
+├── SNAP_train.m              # Programmatic + interactive SVM training from labels
+├── compareMaximaWithLabeled.m # Utility for maxima/label comparison
 ├── README.md                 # This file
 │
 └── +snap_helpers/            # Core processing functions
     ├── createUI.m            # Build main GUI
     ├── updateControls.m      # Dynamic UI state management
-    ├── updateLivePreview.m   # Real-time preview updates
+    ├── updateLivePreview.m   # Processing + preview refresh (manual trigger)
     │
     ├── # Image Processing
     ├── loadImage.m           # TIFF stack loading
     ├── processImage.m        # Apply preprocessing pipeline
-    ├── preprocessNuclei.m    # Nuclei-specific preprocessing
+    ├── preprocessNuclei.m    # Nuclei preprocessing helpers
+    ├── preprocessNucleiWithBgCorr.m # Nuclei preprocessing + background correction
     │
     ├── # Nuclei Analysis
     ├── segmentNuclei.m       # Multi-algorithm segmentation
@@ -327,7 +343,7 @@ SNAP/
 ### Supported File Formats
 
 #### Direct Loading (SNAP)
-- TIFF stacks (`.tif`, `.tiff`) - single or multi-page
+- TIFF stacks (`.tif`, `.tiff`, `.ome.tif`) - single or multi-page
 
 #### Via SNAP_prepare (Bio-Formats)
 - MetaMorph Stack (`.mvd2`)
@@ -400,7 +416,7 @@ If you already have labeled spots for many images, you can train a classifier wi
 exportFiles = {'image1_ch1_signals.mat', 'image2_ch1_signals.mat'};
 labelFiles  = {'image1_labels.csv', 'image2_labels.csv'};
 
-SNAP_trainSVM(exportFiles, labelFiles, 'channel1_classifier.mat', ...
+SNAP_train(exportFiles, labelFiles, 'channel1_classifier.mat', ...
     'MatchDistance', 2, ... % voxels
     'ValidationExportFiles', valExportFiles, ...
     'ValidationLabelFiles', valLabelFiles, ...
@@ -410,14 +426,14 @@ SNAP_trainSVM(exportFiles, labelFiles, 'channel1_classifier.mat', ...
 Or run interactively and provide training/validation directories + output when prompted:
 
 ```matlab
-SNAP_trainSVM
+SNAP_train
 ```
 
 Supported label files:
 - CSV/table with coordinate columns (`maxima_y`/`fitted_y`/`y`, `maxima_x`/`fitted_x`/`x`, optional z) plus `label`
 - MAT progress files from `SNAP_classify` (`labeledReal`, `labeledNoise`)
 
-For coordinate labels, each manual label is matched to the nearest unassigned candidate within `MatchDistance` voxels (one candidate per manual label). Any unmatched candidates are automatically labeled as noise so every candidate contributes to training. If validation files are provided, `SNAP_trainSVM` sweeps SVM parameters (kernel, box constraint, kernel scale / polynomial order) and selects the best model by validation F1 (real class). The training-set real/noise labels are fixed from training volumes and are not relabeled during validation.
+For coordinate labels, each manual label is matched to the nearest unassigned candidate within `MatchDistance` voxels (one candidate per manual label). Any unmatched candidates are automatically labeled as noise so every candidate contributes to training. If validation files are provided, `SNAP_train` sweeps SVM parameters (kernel, box constraint, kernel scale / polynomial order) and selects the best model by validation F1 (real class). The training-set real/noise labels are fixed from training volumes and are not relabeled during validation.
 
 The output classifier is saved in the same format as `SNAP_classify` export and can be loaded directly in `SNAP` / `SNAP_batch`.
 
@@ -445,11 +461,11 @@ The output classifier is saved in the same format as `SNAP_classify` export and 
 | Column | Description |
 |--------|-------------|
 | `signal_id` | Unique signal ID |
-| `maxima_coords` | Original detection coordinates |
-| `fitted_coords` | Sub-pixel fitted coordinates |
-| `amplitude` | Gaussian amplitude |
+| `maxima_x`, `maxima_y`, `maxima_z` | Original detection coordinates |
+| `fitted_x`, `fitted_y`, `fitted_z` | Sub-pixel fitted coordinates |
+| `amplitude` or `amplitude_*` | Method-dependent amplitude fields |
 | `sigma_x`, `sigma_y`, `sigma_z` | Gaussian widths |
-| `r_squared` | Fit quality (0-1) |
+| `r_squared` or `radial_symmetry_score` | Method-dependent quality metric |
 | `integrated_intensity` | Total signal |
 | `background` | Local background estimate |
 
@@ -485,6 +501,7 @@ The output classifier is saved in the same format as `SNAP_classify` export and 
 > - Reduce preview image size during parameter tuning
 > - Use "On Z-Projection" mode for initial parameter exploration
 > - Enable only needed processing steps
+> - Use "Abort Processing" if a trial run is clearly too large
 
 **Q: No spots detected**
 > - Check that maxima detection is enabled for the channel

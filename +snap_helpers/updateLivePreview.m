@@ -1,8 +1,12 @@
 function handles = updateLivePreview(fig_handle)
     handles = guidata(fig_handle);
     
+    if isfield(handles, 'isProcessingPreview') && handles.isProcessingPreview
+        return;
+    end
     
     % Enable abort button and reset abort flag
+    handles.isProcessingPreview = true;
     handles.abortRequested = false;
     handles.abortButton.Enable = 'on';
     handles.updateLivePreviewButton.Enable = 'off'; % Disable update during processing
@@ -12,44 +16,25 @@ function handles = updateLivePreview(fig_handle)
     handles.statusLabel.FontColor = [0.8, 0, 0];
     drawnow;
     try
+        numActiveChannels = str2double(handles.numChanDrop.Value);
+        handles = normalizeRuntimeCache(handles, numActiveChannels);
+
         % Clear preview cache before processing new data to ensure fresh results
         snap_helpers.clearPreviewCache(handles);
         
-        % Initialize fields to prevent errors if files are not loaded
-        handles.rawDIC = [];
-        handles.rawNuclei = [];
+        [handles.rawDIC, handles.runtimeCache.dic] = loadVolumeWithCache( ...
+            handles.runtimeCache.dic, handles.dicPathText.Value, 'DIC');
+        [handles.rawNuclei, handles.runtimeCache.nuclei] = loadVolumeWithCache( ...
+            handles.runtimeCache.nuclei, handles.nucPathText.Value, 'Nuclei');
 
-        if ~isempty(handles.dicPathText.Value)
-            handles.statusLabel.Text = 'Status: Loading DIC...';
-            drawnow;
-            handles.rawDIC = tiffreadVolume(handles.dicPathText.Value);
-        end
-        if ~isempty(handles.nucPathText.Value)
-            handles.statusLabel.Text = 'Status: Loading Nuclei...';
-            drawnow;
-            handles.rawNuclei = tiffreadVolume(handles.nucPathText.Value);
-        end
-        
-        numActiveChannels = str2double(handles.numChanDrop.Value);
-        handles.rawChannel = cell(1, numActiveChannels); % Ensure cell array is correct size
-        handles.processedChannel = cell(1, numActiveChannels); % Initialize processed channel array
-        handles.maximaCoords = cell(1, numActiveChannels); % Initialize maxima coordinates array
-        handles.gaussFitResults = cell(1, numActiveChannels); % Initialize Gaussian fit results array
+        handles.rawChannel = cell(1, numActiveChannels);
+        handles.processedChannel = resizeCellArray(getFieldOrDefault(handles, 'processedChannel', {}), numActiveChannels);
+        handles.maximaCoords = resizeCellArray(getFieldOrDefault(handles, 'maximaCoords', {}), numActiveChannels);
+        handles.gaussFitResults = resizeCellArray(getFieldOrDefault(handles, 'gaussFitResults', {}), numActiveChannels);
         for k = 1:numActiveChannels
-            if ~isempty(handles.channelPathTexts(k).Value)
-                handles.statusLabel.Text = ['Status: Loading Ch. ' num2str(k) '...'];
-                drawnow;
-                try
-                    handles.rawChannel{k} = tiffreadVolume(handles.channelPathTexts(k).Value);
-                    fprintf('Successfully loaded Channel %d: %s\n', k, mat2str(size(handles.rawChannel{k})));
-                catch ME
-                    warning('Failed to load Channel %d: %s', k, ME.message);
-                    handles.rawChannel{k} = [];
-                end
-            else
-                handles.rawChannel{k} = [];
-                fprintf('Channel %d path is empty\n', k);
-            end
+            chPath = handles.channelPathTexts(k).Value;
+            [handles.rawChannel{k}, handles.runtimeCache.channels{k}] = loadVolumeWithCache( ...
+                handles.runtimeCache.channels{k}, chPath, sprintf('Ch. %d', k));
         end
 
         % First, update the controls to populate dropdowns with all possible items
@@ -57,7 +42,7 @@ function handles = updateLivePreview(fig_handle)
         drawnow;
         guidata(fig_handle, handles); % Save handles with raw data before updating controls
         snap_helpers.updateControls(fig_handle);
-        % Keep the current handles - don't overwrite with old data from guidata
+        handles = guidata(fig_handle);
 
         loaded_items = {};
         if isfield(handles, 'rawDIC') && ~isempty(handles.rawDIC), loaded_items{end+1} = 'DIC'; end
@@ -104,70 +89,88 @@ function handles = updateLivePreview(fig_handle)
         end
 
         for k = 1:numActiveChannels
-            
-            % Check for abort request
-            if handles.abortRequested
+
+            latest_handles = guidata(fig_handle);
+            if latest_handles.abortRequested
+                handles = latest_handles;
                 handles.statusLabel.Text = 'Status: Processing aborted by user';
                 handles.statusLabel.FontColor = [0.8 0.2 0.2];
                 handles.abortButton.Enable = 'off';
                 handles.updateLivePreviewButton.Enable = 'on';
+                handles.isProcessingPreview = false;
                 guidata(fig_handle, handles);
-                fprintf('Processing aborted at channel %d\n', k);
                 return;
             end
-            
-            if k <= numel(handles.rawChannel) && ~isempty(handles.rawChannel{k})
-                fprintf('Processing Channel %d...\n', k);
+
+            chCache = handles.runtimeCache.channels{k};
+            chPath = handles.channelPathTexts(k).Value;
+
+            if k > numel(handles.rawChannel) || isempty(handles.rawChannel{k})
+                handles.processedChannel{k} = [];
+                handles.maximaCoords{k} = [];
+                handles.gaussFitResults{k} = [];
+                chCache.procSignature = '';
+                chCache.maximaSignature = '';
+                chCache.fitSignature = '';
+                chCache.maximaCoordsRaw = [];
+                chCache.maximaCoordsFiltered = [];
+                chCache.fitResults = [];
+                handles.runtimeCache.channels{k} = chCache;
+                continue;
+            end
+
+            processSig = buildChannelProcessingSignature(handles, k, chPath);
+            if isfield(chCache, 'procSignature') && strcmp(chCache.procSignature, processSig) && ...
+                    isfield(chCache, 'processed') && ~isempty(chCache.processed)
+                handles.processedChannel{k} = chCache.processed;
+            else
+                handles.statusLabel.Text = ['Status: Processing Ch. ' num2str(k) '...'];
+                drawnow;
                 handles.processedChannel{k} = snap_helpers.processImage(handles, k, handles.statusLabel);
-                
-                % Check if processing was aborted
                 if isempty(handles.processedChannel{k})
                     handles.statusLabel.Text = 'Status: Processing aborted by user';
                     handles.statusLabel.FontColor = [0.8 0.2 0.2];
                     handles.abortButton.Enable = 'off';
                     handles.updateLivePreviewButton.Enable = 'on';
+                    handles.isProcessingPreview = false;
                     guidata(handles.fig, handles);
                     return;
                 end
-                fprintf('Channel %d processed successfully: %s\n', k, mat2str(size(handles.processedChannel{k})));
-                
-                handles.gaussFitResults{k} = []; % Clear previous results
+                chCache.processed = handles.processedChannel{k};
+                chCache.procSignature = processSig;
+                chCache.maximaSignature = '';
+                chCache.fitSignature = '';
+            end
 
-                if handles.maximaEnabledChecks(k).Value
-                    % Detect maxima regardless of showMaxima setting (showMaxima only controls display)
+            handles.gaussFitResults{k} = [];
+
+            if handles.maximaEnabledChecks(k).Value
+                maximaSig = buildChannelMaximaSignature(handles, k, processSig);
+                if isfield(chCache, 'maximaSignature') && strcmp(chCache.maximaSignature, maximaSig) && ...
+                        isfield(chCache, 'maximaCoordsRaw')
+                    coords_raw = chCache.maximaCoordsRaw;
+                else
                     handles.statusLabel.Text = ['Status: Finding Maxima Ch. ' num2str(k) '...'];
                     drawnow;
-                    processed_img = handles.processedChannel{k};
-                    
-                    % Use shared maxima detection function (same as SNAP_batch)
-                    coords = snap_helpers.detectMaxima(processed_img, handles, k);
-                    handles.maximaCoords{k} = coords;
-                    
-                    % COHESION FIX: Ensure preview cache is populated with maxima coordinates
-                    % This ensures signal analysis can access the same data as preview
-                    if ~isfield(handles, 'previewCache')
-                        handles.previewCache = struct();
-                    end
-                    if ~isfield(handles.previewCache, 'channels')
-                        handles.previewCache.channels = cell(1, numActiveChannels);
-                    end
-                    if k > length(handles.previewCache.channels)
-                        handles.previewCache.channels{k} = struct();
-                    elseif isempty(handles.previewCache.channels{k})
-                        handles.previewCache.channels{k} = struct();
-                    end
-                    handles.previewCache.channels{k}.allMaxima = coords;
-                    
-                    colorName = handles.maximaColorDrops(k).Value;
-                    count = size(coords, 1);
-                    maxima_counts_text{end+1} = sprintf('Channel %d (%s): %d', k, colorName, count);
+                    coords_raw = snap_helpers.detectMaxima(handles.processedChannel{k}, handles, k);
+                    chCache.maximaCoordsRaw = coords_raw;
+                    chCache.maximaSignature = maximaSig;
+                    chCache.fitSignature = '';
+                end
 
-                    % --- Perform Local Maxima Fitting if Enabled ---
-                    if handles.gaussFitEnabledChecks(k).Value && ~isempty(coords)
+                final_coords = coords_raw;
+                fit_results = [];
+
+                if handles.gaussFitEnabledChecks(k).Value && ~isempty(coords_raw)
+                    fitSig = buildChannelFitSignature(handles, k, maximaSig);
+                    if isfield(chCache, 'fitSignature') && strcmp(chCache.fitSignature, fitSig) && ...
+                            isfield(chCache, 'maximaCoordsFiltered') && isfield(chCache, 'fitResults')
+                        final_coords = chCache.maximaCoordsFiltered;
+                        fit_results = chCache.fitResults;
+                    else
                         handles.statusLabel.Text = ['Status: Fitting Maxima Ch. ' num2str(k) '...'];
                         drawnow;
-                        
-                        % Consolidate all fitting parameters into a single struct
+
                         fitParams.gaussFitVoxelWindowSize = handles.gaussFitVoxelWindowSlider(k).Value;
                         fitParams.gaussFitBgCorrMethod = handles.gaussFitBgCorrMethodDrop(k).Value;
                         fitParams.gaussFitBgCorrWidth = handles.gaussFitBgCorrWidthEdit(k).Value;
@@ -176,143 +179,179 @@ function handles = updateLivePreview(fig_handle)
                         fitParams.gaussFitMaxIterations = handles.gaussFitMaxIterationsEdit(k).Value;
                         fitParams.gaussFitTolerance = handles.gaussFitToleranceEdit(k).Value;
                         fitParams.gaussFitRadialRadius = handles.gaussFitRadialRadiusEdit(k).Value;
-                        
-                        % Add the missing gaussFitPlotCheck parameter
-                        fitParams.gaussFitPlotCheck = false; % Default to false for live preview
+                        fitParams.gaussFitPlotCheck = false;
                         fitParams.xySpacing = handles.xySpacingInputs(k).Value;
                         fitParams.zSpacing = handles.zSpacingInputs(k).Value;
-                        
+                        fitParams = sanitizeFitParams(fitParams);
                         mode = handles.maximaModeDrops(k).Value;
                         is3D = ~strcmp(mode, 'On Z-Projection');
-                        
-                        % Fit on the RAW image data, not the processed data
+
                         try
-                            results = snap_helpers.fitGaussians(handles.rawChannel{k}, coords, fitParams, is3D);
-                            
-                            % Store the raw data window along with the fit results
-                            for i = 1:size(coords,1)
-                                results(i).rawDataWindow = getWindowData(handles.rawChannel{k}, round(coords(i,:)), fitParams.gaussFitVoxelWindowSize, is3D);
-                                results(i).fitMethod = fitParams.gaussFitMethod;
-                            end
-                            
-                            % Apply fit filtering if enabled and get the filter mask
-                            [filtered_results, filter_mask] = snap_helpers.applyFitFiltering(results, k, handles);
-                            
-                            % CRITICAL: Always apply filter mask to maintain synchronization
-                            handles.maximaCoords{k} = coords(filter_mask, :);
-                            handles.gaussFitResults{k} = filtered_results;
-                            
-                            % Verify synchronization
-                            if length(filtered_results) ~= size(handles.maximaCoords{k}, 1)
-                                warning('Channel %d: maximaCoords and fitResults length mismatch after filtering (%d vs %d)', ...
-                                    k, size(handles.maximaCoords{k}, 1), length(filtered_results));
+                            numCoords = size(coords_raw, 1);
+                            chunkSize = 250;
+                            numChunks = ceil(numCoords / chunkSize);
+                            resultChunks = cell(1, numChunks);
+                            chunkCount = 0;
+                            abortedDuringFit = false;
+                            for startIdx = 1:chunkSize:numCoords
+                                latest_handles = guidata(fig_handle);
+                                if latest_handles.abortRequested
+                                    abortedDuringFit = true;
+                                    break;
+                                end
+                                endIdx = min(startIdx + chunkSize - 1, numCoords);
+                                handles.statusLabel.Text = sprintf('Status: Fitting Maxima Ch. %d (%d/%d)...', k, endIdx, numCoords);
+                                drawnow;
+                                chunkCount = chunkCount + 1;
+                                chunkCoords = coords_raw(startIdx:endIdx, :);
+                                [resultChunks{chunkCount}, chunkAborted] = snap_helpers.fitGaussians( ...
+                                    handles.rawChannel{k}, chunkCoords, fitParams, is3D, @() isAbortRequested(fig_handle));
+                                if chunkAborted
+                                    abortedDuringFit = true;
+                                    break;
+                                end
                             end
 
+                            if abortedDuringFit
+                                handles = guidata(fig_handle);
+                                handles.statusLabel.Text = 'Status: Processing aborted by user';
+                                handles.statusLabel.FontColor = [0.8 0.2 0.2];
+                                handles.abortButton.Enable = 'off';
+                                handles.updateLivePreviewButton.Enable = 'on';
+                                handles.isProcessingPreview = false;
+                                guidata(fig_handle, handles);
+                                return;
+                            end
+
+                            results = [resultChunks{1:chunkCount}];
+                            [filtered_results, filter_mask] = snap_helpers.applyFitFiltering(results, k, handles);
+                            final_coords = coords_raw(filter_mask, :);
+                            fit_results = filtered_results;
+                            chCache.fitSignature = fitSig;
+                            chCache.maximaCoordsFiltered = final_coords;
+                            chCache.fitResults = fit_results;
                         catch ME
                             warning('Gaussian fitting failed for channel %d: %s', k, ME.message);
-                            handles.gaussFitResults{k} = [];
+                            final_coords = coords_raw;
+                            fit_results = [];
+                            chCache.fitSignature = '';
+                            chCache.maximaCoordsFiltered = final_coords;
+                            chCache.fitResults = fit_results;
                         end
                     end
                 else
-                    handles.maximaCoords{k} = [];
+                    chCache.fitSignature = '';
+                    chCache.maximaCoordsFiltered = [];
+                    chCache.fitResults = [];
                 end
+
+                handles.maximaCoords{k} = final_coords;
+                handles.gaussFitResults{k} = fit_results;
+
+                colorName = handles.maximaColorDrops(k).Value;
+                count = size(final_coords, 1);
+                maxima_counts_text{end+1} = sprintf('Channel %d (%s): %d', k, colorName, count);
             else
-                handles.processedChannel{k} = [];
                 handles.maximaCoords{k} = [];
+                handles.gaussFitResults{k} = [];
+                chCache.maximaSignature = '';
+                chCache.fitSignature = '';
+                chCache.maximaCoordsRaw = [];
+                chCache.maximaCoordsFiltered = [];
+                chCache.fitResults = [];
             end
+
+            handles.runtimeCache.channels{k} = chCache;
         end
         
-        % Apply nuclei inclusion/exclusion filtering if enabled
-        if handles.nucInclusionExclusionEnabledCheck.Value && handles.nucSegEnabledCheck.Value
-            handles.statusLabel.Text = 'Status: Applying Nuclei Filtering...';
-            drawnow;
-            
-            % Check for abort before nuclei processing
-            if handles.abortRequested
-                handles.statusLabel.Text = 'Status: Processing aborted by user';
-                handles.statusLabel.FontColor = [0.8 0.2 0.2];
-                handles.abortButton.Enable = 'off';
-                handles.updateLivePreviewButton.Enable = 'on';
-                guidata(fig_handle, handles);
-                fprintf('Processing aborted during nuclei filtering\n');
-                return;
-            end
-            
-            % Get nuclei mask
-            if ~isempty(handles.rawNuclei)
+        % Build nuclei segmentation once and reuse across filtering/cache/export.
+        processed_nuclei = [];
+        nuclei_mask = [];
+        nucleus_labels = [];
+        if ~isempty(handles.rawNuclei)
+            nucSig = buildNucleiSignature(handles, handles.nucPathText.Value);
+            if isfield(handles.runtimeCache, 'nucleiSeg') && ...
+                    isfield(handles.runtimeCache.nucleiSeg, 'signature') && ...
+                    strcmp(handles.runtimeCache.nucleiSeg.signature, nucSig)
+                processed_nuclei = handles.runtimeCache.nucleiSeg.processed;
+                nuclei_mask = handles.runtimeCache.nucleiSeg.mask;
+                nucleus_labels = handles.runtimeCache.nucleiSeg.labels;
+            else
+                handles.statusLabel.Text = 'Status: Processing Nuclei...';
+                drawnow;
                 processed_nuclei = snap_helpers.preprocessNucleiWithBgCorr(handles);
-                
-                % Check if preprocessing was aborted
                 if isempty(processed_nuclei)
                     handles.statusLabel.Text = 'Status: Processing aborted by user';
                     handles.statusLabel.FontColor = [0.8 0.2 0.2];
                     handles.abortButton.Enable = 'off';
                     handles.updateLivePreviewButton.Enable = 'on';
+                    handles.isProcessingPreview = false;
                     guidata(fig_handle, handles);
                     return;
                 end
-                
                 [nuclei_mask, nucleus_labels] = snap_helpers.segmentNuclei(processed_nuclei, handles);
-                
-                % Check if segmentation was aborted
                 if isempty(nuclei_mask)
                     handles.statusLabel.Text = 'Status: Processing aborted by user';
                     handles.statusLabel.FontColor = [0.8 0.2 0.2];
                     handles.abortButton.Enable = 'off';
                     handles.updateLivePreviewButton.Enable = 'on';
+                    handles.isProcessingPreview = false;
                     guidata(fig_handle, handles);
                     return;
                 end
-                
-                % Determine which channels to apply filtering to
-                apply_to = handles.nucInclusionExclusionApplyDrop.Value;
-                mode = handles.nucInclusionExclusionModeDrop.Value;
-                
-                if strcmp(apply_to, 'All Channels')
+                handles.runtimeCache.nucleiSeg.signature = nucSig;
+                handles.runtimeCache.nucleiSeg.processed = processed_nuclei;
+                handles.runtimeCache.nucleiSeg.mask = nuclei_mask;
+                handles.runtimeCache.nucleiSeg.labels = nucleus_labels;
+            end
+        else
+            handles.runtimeCache.nucleiSeg.signature = '';
+            handles.runtimeCache.nucleiSeg.processed = [];
+            handles.runtimeCache.nucleiSeg.mask = [];
+            handles.runtimeCache.nucleiSeg.labels = [];
+        end
+
+        handles.processedNuclei = processed_nuclei;
+        handles.nucleiMask = nuclei_mask;
+        handles.nucleusLabels = nucleus_labels;
+
+        % Apply nuclei inclusion/exclusion filtering if enabled
+        if handles.nucInclusionExclusionEnabledCheck.Value && handles.nucSegEnabledCheck.Value && ~isempty(nuclei_mask)
+            handles.statusLabel.Text = 'Status: Applying Nuclei Filtering...';
+            drawnow;
+            apply_to = handles.nucInclusionExclusionApplyDrop.Value;
+            mode = handles.nucInclusionExclusionModeDrop.Value;
+            if strcmp(apply_to, 'All Channels')
+                channels_to_filter = 1:numActiveChannels;
+            else
+                channel_num = sscanf(apply_to, 'Channel %d');
+                if isempty(channel_num) || ~isfinite(channel_num) || channel_num < 1 || channel_num > numActiveChannels
+                    warning('Invalid nuclei filter target "%s". Applying to all active channels.', char(string(apply_to)));
                     channels_to_filter = 1:numActiveChannels;
                 else
-                    % Extract channel number from string like "Channel 1"
-                    channel_num = str2double(apply_to(end));
                     channels_to_filter = channel_num;
                 end
-                
-                % Apply filtering to selected channels (only if maxima exist)
-                for ch = channels_to_filter
-                    % Check if maximaCoords exists and has data for this channel
-                    if isfield(handles, 'maximaCoords') && ch <= numel(handles.maximaCoords) && ~isempty(handles.maximaCoords{ch})
-                        % Validate dimensional consistency and provide user guidance
-                        validateDimensionalConsistency(handles.maximaCoords{ch}, nuclei_mask, ch);
-                        
-                        % Use shared nuclei filtering function (returns mask to maintain synchronization)
-                        [filtered_coords, keepMask] = snap_helpers.filterMaximaByNuclei(handles.maximaCoords{ch}, nuclei_mask, mode);
-                        handles.maximaCoords{ch} = filtered_coords;
-                        
-                        % CRITICAL: Also filter gaussFitResults using the same mask
-                        if isfield(handles, 'gaussFitResults') && ch <= length(handles.gaussFitResults) && ...
-                           ~isempty(handles.gaussFitResults{ch}) && ~isempty(keepMask)
-                            if length(handles.gaussFitResults{ch}) == length(keepMask)
-                                handles.gaussFitResults{ch} = handles.gaussFitResults{ch}(keepMask);
-                            else
-                                warning('Channel %d: Cannot sync fitResults with nuclei filter (length mismatch). Clearing fits.', ch);
-                                handles.gaussFitResults{ch} = [];
-                            end
+            end
+
+            for ch = channels_to_filter
+                if isfield(handles, 'maximaCoords') && ch <= numel(handles.maximaCoords) && ~isempty(handles.maximaCoords{ch})
+                    validateDimensionalConsistency(handles.maximaCoords{ch}, nuclei_mask, ch);
+                    [filtered_coords, keepMask] = snap_helpers.filterMaximaByNuclei(handles.maximaCoords{ch}, nuclei_mask, mode);
+                    handles.maximaCoords{ch} = filtered_coords;
+                    if ch <= length(handles.gaussFitResults) && ~isempty(handles.gaussFitResults{ch}) && ~isempty(keepMask)
+                        if length(handles.gaussFitResults{ch}) == length(keepMask)
+                            handles.gaussFitResults{ch} = handles.gaussFitResults{ch}(keepMask);
+                        else
+                            warning('Channel %d: Cannot sync fitResults with nuclei filter (length mismatch). Clearing fits.', ch);
+                            handles.gaussFitResults{ch} = [];
                         end
-                        
-                        % Update the preview cache with filtered coordinates
-                        if isfield(handles, 'previewCache') && isfield(handles.previewCache, 'channels') && ...
-                           ch <= length(handles.previewCache.channels) && ~isempty(handles.previewCache.channels{ch})
-                            handles.previewCache.channels{ch}.allMaxima = filtered_coords;
-                        end
-                        
-                        % Update maxima count text
-                        colorName = handles.maximaColorDrops(ch).Value;
-                        count = size(filtered_coords, 1);
-                        % Find and update the corresponding entry in maxima_counts_text
-                        for i = 1:length(maxima_counts_text)
-                            if contains(maxima_counts_text{i}, ['Channel ' num2str(ch)])
-                                maxima_counts_text{i} = sprintf('Channel %d (%s): %d', ch, colorName, count);
-                                break;
-                            end
+                    end
+                    colorName = handles.maximaColorDrops(ch).Value;
+                    count = size(filtered_coords, 1);
+                    for i = 1:length(maxima_counts_text)
+                        if contains(maxima_counts_text{i}, ['Channel ' num2str(ch)])
+                            maxima_counts_text{i} = sprintf('Channel %d (%s): %d', ch, colorName, count);
+                            break;
                         end
                     end
                 end
@@ -346,85 +385,6 @@ function handles = updateLivePreview(fig_handle)
             end
         end
         
-        % CRITICAL FIX: Apply nuclei filtering BEFORE creating cache
-        % This ensures the analysis uses the same filtered data as the preview
-        if handles.nucInclusionExclusionEnabledCheck.Value && handles.nucSegEnabledCheck.Value
-            mode = handles.nucInclusionExclusionModeDrop.Value;
-            
-            % Get nuclei mask - ensure nuclei segmentation is enabled
-            if ~isempty(handles.rawNuclei)
-                processed_nuclei = snap_helpers.preprocessNucleiWithBgCorr(handles);
-                
-                % Check if preprocessing was aborted
-                if isempty(processed_nuclei)
-                    handles.statusLabel.Text = 'Status: Processing aborted by user';
-                    handles.statusLabel.FontColor = [0.8 0.2 0.2];
-                    handles.abortButton.Enable = 'off';
-                    handles.updateLivePreviewButton.Enable = 'on';
-                    guidata(handles.fig, handles);
-                    return;
-                end
-                
-                [nuclei_mask, nucleus_labels] = snap_helpers.segmentNuclei(processed_nuclei, handles);
-                
-                % Check if segmentation was aborted
-                if isempty(nuclei_mask)
-                    handles.statusLabel.Text = 'Status: Processing aborted by user';
-                    handles.statusLabel.FontColor = [0.8 0.2 0.2];
-                    handles.abortButton.Enable = 'off';
-                    handles.updateLivePreviewButton.Enable = 'on';
-                    guidata(handles.fig, handles);
-                    return;
-                end
-                
-                % Determine which channels to apply filtering to
-                apply_to = handles.nucInclusionExclusionApplyDrop.Value;
-                
-                if strcmp(apply_to, 'All Channels')
-                    channels_to_filter = 1:numActiveChannels;
-                else
-                    % Extract channel number from string like "Channel 1"
-                    channel_num = str2double(apply_to(end));
-                    channels_to_filter = channel_num;
-                end
-                
-                % Apply filtering to selected channels (only if maxima exist)
-                for ch = channels_to_filter
-                    % Check if maximaCoords exists and has data for this channel
-                    if isfield(handles, 'maximaCoords') && ch <= numel(handles.maximaCoords) && ~isempty(handles.maximaCoords{ch})
-                        % Validate dimensional consistency and provide user guidance
-                        validateDimensionalConsistency(handles.maximaCoords{ch}, nuclei_mask, ch);
-                        
-                        % Use shared nuclei filtering function (returns mask to maintain synchronization)
-                        [filtered_coords, keepMask] = snap_helpers.filterMaximaByNuclei(handles.maximaCoords{ch}, nuclei_mask, mode);
-                        handles.maximaCoords{ch} = filtered_coords;
-                        
-                        % CRITICAL: Also filter gaussFitResults using the same mask
-                        if isfield(handles, 'gaussFitResults') && ch <= length(handles.gaussFitResults) && ...
-                           ~isempty(handles.gaussFitResults{ch}) && ~isempty(keepMask)
-                            if length(handles.gaussFitResults{ch}) == length(keepMask)
-                                handles.gaussFitResults{ch} = handles.gaussFitResults{ch}(keepMask);
-                            else
-                                warning('Channel %d: Cannot sync fitResults with nuclei filter (length mismatch). Clearing fits.', ch);
-                                handles.gaussFitResults{ch} = [];
-                            end
-                        end
-                        
-                        % Update maxima count text
-                        colorName = handles.maximaColorDrops(ch).Value;
-                        count = size(filtered_coords, 1);
-                        % Find and update the corresponding entry in maxima_counts_text
-                        for i = 1:length(maxima_counts_text)
-                            if contains(maxima_counts_text{i}, ['Channel ' num2str(ch)])
-                                maxima_counts_text{i} = sprintf('Channel %d (%s): %d', ch, colorName, count);
-                                break;
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
         guidata(handles.fig, handles);
 
         % Create preview cache for fast rendering (now with filtered coordinates)
@@ -470,6 +430,7 @@ function handles = updateLivePreview(fig_handle)
         % Disable abort button and re-enable update button
         handles.abortButton.Enable = 'off';
         handles.updateLivePreviewButton.Enable = 'on';
+        handles.isProcessingPreview = false;
         
         guidata(fig_handle, handles);
 
@@ -480,36 +441,316 @@ function handles = updateLivePreview(fig_handle)
         % Disable abort button and re-enable update button even on error
         handles.abortButton.Enable = 'off';
         handles.updateLivePreviewButton.Enable = 'on';
+        handles.isProcessingPreview = false;
+        guidata(fig_handle, handles);
         
         warning('An error occurred during preview update: %s', ME.message);
-        rethrow(ME);
+        try
+            uialert(handles.fig, ME.message, 'Preview Update Error');
+        catch
+            % Keep non-fatal in environments where uialert is unavailable.
+        end
     end
     
     % Maxima detection functions have been moved to snap_helpers.detectMaxima()
     % Nuclei filtering function has been moved to snap_helpers.filterMaximaByNuclei()
     % to ensure SNAP and SNAP_batch use identical processing logic
 
-    function windowData = getWindowData(imageData, centerCoord, windowSize, is3D)
-        % Extract window around centerCoord
-        % COORDINATE CONVENTION: centerCoord is [row, col, slice] (ARRAY CONVENTION)
-        
-        winRadius = (windowSize - 1) / 2;
-        imgSize = size(imageData);
-        
-        % Use ARRAY CONVENTION: row, col, slice
-        row_min = max(1, round(centerCoord(1) - winRadius));
-        row_max = min(imgSize(1), round(centerCoord(1) + winRadius));
-        col_min = max(1, round(centerCoord(2) - winRadius));
-        col_max = min(imgSize(2), round(centerCoord(2) + winRadius));
-        
-        if is3D
-            slice_min = max(1, round(centerCoord(3) - winRadius));
-            slice_max = min(imgSize(3), round(centerCoord(3) + winRadius));
-            % DIRECT array access with ARRAY CONVENTION
-            windowData = imageData(row_min:row_max, col_min:col_max, slice_min:slice_max);
+    function handlesOut = normalizeRuntimeCache(handlesIn, numChannels)
+        handlesOut = handlesIn;
+        if ~isfield(handlesOut, 'runtimeCache') || ~isstruct(handlesOut.runtimeCache)
+            handlesOut.runtimeCache = struct();
+        end
+        if ~isfield(handlesOut.runtimeCache, 'dic') || ~isstruct(handlesOut.runtimeCache.dic)
+            handlesOut.runtimeCache.dic = struct('path', '', 'raw', []);
+        end
+        if ~isfield(handlesOut.runtimeCache, 'nuclei') || ~isstruct(handlesOut.runtimeCache.nuclei)
+            handlesOut.runtimeCache.nuclei = struct('path', '', 'raw', []);
+        end
+        if ~isfield(handlesOut.runtimeCache, 'nucleiSeg') || ~isstruct(handlesOut.runtimeCache.nucleiSeg)
+            handlesOut.runtimeCache.nucleiSeg = struct('signature', '', 'processed', [], 'mask', [], 'labels', []);
+        end
+        if ~isfield(handlesOut.runtimeCache, 'channels') || ~iscell(handlesOut.runtimeCache.channels)
+            handlesOut.runtimeCache.channels = cell(1, numChannels);
+        end
+        if numel(handlesOut.runtimeCache.channels) < numChannels
+            handlesOut.runtimeCache.channels{numChannels} = [];
+        end
+        for ci = 1:numChannels
+            if isempty(handlesOut.runtimeCache.channels{ci}) || ~isstruct(handlesOut.runtimeCache.channels{ci})
+                handlesOut.runtimeCache.channels{ci} = struct( ...
+                    'path', '', ...
+                    'raw', [], ...
+                    'processed', [], ...
+                    'procSignature', '', ...
+                    'maximaCoordsRaw', [], ...
+                    'maximaCoordsFiltered', [], ...
+                    'fitResults', [], ...
+                    'maximaSignature', '', ...
+                    'fitSignature', '');
+            end
+        end
+    end
+
+    function [volumeData, cacheEntry] = loadVolumeWithCache(cacheEntry, filePath, label)
+        if nargin < 3
+            label = 'Image';
+        end
+        if isempty(filePath)
+            volumeData = [];
+            cacheEntry.path = '';
+            cacheEntry.raw = [];
+            cacheEntry.fileDatenum = [];
+            cacheEntry.fileBytes = [];
+            return;
+        end
+        fileInfo = dir(filePath);
+        fileDatenum = [];
+        fileBytes = [];
+        if ~isempty(fileInfo)
+            fileDatenum = fileInfo(1).datenum;
+            fileBytes = fileInfo(1).bytes;
+        end
+
+        samePath = isfield(cacheEntry, 'path') && strcmp(cacheEntry.path, filePath);
+        sameMeta = isfield(cacheEntry, 'fileDatenum') && isfield(cacheEntry, 'fileBytes') && ...
+            isequal(cacheEntry.fileDatenum, fileDatenum) && isequal(cacheEntry.fileBytes, fileBytes);
+        if samePath && sameMeta && isfield(cacheEntry, 'raw') && ~isempty(cacheEntry.raw)
+            volumeData = cacheEntry.raw;
+            return;
+        end
+        handles.statusLabel.Text = ['Status: Loading ' label '...'];
+        drawnow;
+        try
+            volumeData = tiffreadVolume(filePath);
+            cacheEntry.path = filePath;
+            cacheEntry.raw = volumeData;
+            cacheEntry.fileDatenum = fileDatenum;
+            cacheEntry.fileBytes = fileBytes;
+        catch ME
+            warning('Failed to load %s (%s): %s', label, filePath, ME.message);
+            volumeData = [];
+            cacheEntry.path = filePath;
+            cacheEntry.raw = [];
+            cacheEntry.fileDatenum = [];
+            cacheEntry.fileBytes = [];
+        end
+    end
+
+    function outCells = resizeCellArray(inCells, n)
+        outCells = cell(1, n);
+        if isempty(inCells)
+            return;
+        end
+        copyN = min(numel(inCells), n);
+        outCells(1:copyN) = inCells(1:copyN);
+    end
+
+    function val = getFieldOrDefault(inStruct, fieldName, defaultVal)
+        if isfield(inStruct, fieldName)
+            val = inStruct.(fieldName);
         else
-            % DIRECT array access with ARRAY CONVENTION
-            windowData = imageData(row_min:row_max, col_min:col_max);
+            val = defaultVal;
+        end
+    end
+
+    function sig = buildChannelProcessingSignature(h, ch, chPath)
+        s = struct();
+        s.path = chPath;
+        s.xySpacing = h.xySpacingInputs(ch).Value;
+        s.zSpacing = h.zSpacingInputs(ch).Value;
+        s.deconvEnabled = h.deconvEnabledChecks(ch).Value;
+        s.deconvMethod = h.deconvMethodDrops(ch).Value;
+        s.deconvPSFSource = h.deconvPSFSourceDrops(ch).Value;
+        s.deconvPSFPath = h.deconvPSFPathTexts(ch).Value;
+        s.deconvPSFSigmaXY = h.deconvPSFSigmaXYInputs(ch).Value;
+        s.deconvPSFSigmaZ = h.deconvPSFSigmaZInputs(ch).Value;
+        s.deconvPSFSizeXY = h.deconvPSFSizeXYInputs(ch).Value;
+        s.deconvPSFSizeZ = h.deconvPSFSizeZInputs(ch).Value;
+        s.deconvLRIterations = h.deconvLRIterationsInputs(ch).Value;
+        s.deconvLRDamping = h.deconvLRDampingInputs(ch).Value;
+        s.deconvWienerNSR = h.deconvWienerNSRInputs(ch).Value;
+        s.deconvBlindIterations = h.deconvBlindIterationsInputs(ch).Value;
+        s.deconvBlindUnderRelax = h.deconvBlindUnderRelaxInputs(ch).Value;
+        s.preprocEnabled = h.preprocEnabledChecks(ch).Value;
+        s.preprocMode = h.preprocessModeDrops(ch).Value;
+        s.preprocProjection = h.preprocessProjectionDrops(ch).Value;
+        s.preprocScale = h.preprocessScaleChecks(ch).Value;
+        s.preprocMethod = h.preprocMethodDrops(ch).Value;
+        s.preprocParam1 = h.preprocParam1Inputs(ch).Value;
+        s.preprocParam2 = h.preprocParam2Inputs(ch).Value;
+        s.waveletName = h.waveletNameDrops(ch).Value;
+        s.preprocParam3 = h.preprocParam3Inputs(ch).Value;
+        s.preprocParam4 = h.preprocParam4Inputs(ch).Value;
+        s.nlmStrength = h.nlmFilterStrengthInputs(ch).Value;
+        s.nlmSearch = h.nlmSearchWindowInputs(ch).Value;
+        s.nlmComparison = h.nlmComparisonWindowInputs(ch).Value;
+        s.preprocClip = h.preprocClipChecks(ch).Value;
+        s.bgEnabled = h.bgCorrEnabledChecks(ch).Value;
+        s.bgMode = h.bgCorrModeDrops(ch).Value;
+        s.bgProjection = h.bgCorrProjectionDrops(ch).Value;
+        s.bgScale = h.bgCorrScaleChecks(ch).Value;
+        s.bgMethod = h.bgMethodDrops(ch).Value;
+        s.bgParam = h.bgParamInputs(ch).Value;
+        s.bgClip = h.bgCorrClipChecks(ch).Value;
+        sig = jsonencode(s);
+    end
+
+    function sig = buildChannelMaximaSignature(h, ch, processSig)
+        s = struct();
+        s.processSig = processSig;
+        s.maximaEnabled = h.maximaEnabledChecks(ch).Value;
+        s.maximaMode = h.maximaModeDrops(ch).Value;
+        s.maximaProjection = h.maximaProjectionDrops(ch).Value;
+        s.maximaMethod = h.maximaMethodDrops(ch).Value;
+        s.maximaNeighborhood = h.maximaNeighborhoodInputs(ch).Value;
+        s.maximaScale = h.maximaScaleChecks(ch).Value;
+        s.maximaH = h.hMaxInputs(ch).Value;
+        s.logSigma = h.logSigmaInputs(ch).Value;
+        s.logThreshold = h.logThresholdInputs(ch).Value;
+        sig = jsonencode(s);
+    end
+
+    function sig = buildChannelFitSignature(h, ch, maximaSig)
+        s = struct();
+        s.maximaSig = maximaSig;
+        s.fitEnabled = h.gaussFitEnabledChecks(ch).Value;
+        s.fitMethod = h.gaussFitMethodDrop(ch).Value;
+        s.fitWindow = h.gaussFitVoxelWindowSlider(ch).Value;
+        s.fitBgMethod = h.gaussFitBgCorrMethodDrop(ch).Value;
+        s.fitBgWidth = h.gaussFitBgCorrWidthEdit(ch).Value;
+        s.fitPolyDegree = h.gaussFitPolyDegreeEdit(ch).Value;
+        s.fitMaxIterations = h.gaussFitMaxIterationsEdit(ch).Value;
+        s.fitTolerance = h.gaussFitToleranceEdit(ch).Value;
+        s.fitRadialRadius = h.gaussFitRadialRadiusEdit(ch).Value;
+        s.xySpacing = h.xySpacingInputs(ch).Value;
+        s.zSpacing = h.zSpacingInputs(ch).Value;
+        s.filterEnabled = h.fitFilterEnabledChecks(ch).Value;
+        s.filterR2Enabled = h.fitFilterRSquaredEnabledChecks(ch).Value;
+        s.filterR2Min = h.fitFilterRSquaredMinInputs(ch).Value;
+        s.filterR2Max = h.fitFilterRSquaredMaxInputs(ch).Value;
+        s.filterSigmaEnabled = h.fitFilterSigmaSumEnabledChecks(ch).Value;
+        s.filterSigmaMin = h.fitFilterSigmaSumMinInputs(ch).Value;
+        s.filterSigmaMax = h.fitFilterSigmaSumMaxInputs(ch).Value;
+        s.filterAmpEnabled = h.fitFilterAmplitudeEnabledChecks(ch).Value;
+        s.filterAmpMin = h.fitFilterAmplitudeMinInputs(ch).Value;
+        s.filterAmpMax = h.fitFilterAmplitudeMaxInputs(ch).Value;
+        s.filterIntensityEnabled = h.fitFilterIntensityEnabledChecks(ch).Value;
+        s.filterIntensityMin = h.fitFilterIntensityMinInputs(ch).Value;
+        s.filterIntensityMax = h.fitFilterIntensityMaxInputs(ch).Value;
+        sig = jsonencode(s);
+    end
+
+    function sig = buildNucleiSignature(h, nucPath)
+        s = struct();
+        s.path = nucPath;
+        s.xySpacing = h.nucXYSpacingInput.Value;
+        s.zSpacing = h.nucZSpacingInput.Value;
+        s.deconvEnabled = h.nucDeconvEnabledCheck.Value;
+        s.deconvMethod = h.nucDeconvMethodDrop.Value;
+        s.deconvPSFSource = h.nucDeconvPSFSourceDrop.Value;
+        s.deconvPSFPath = h.nucDeconvPSFPathText.Value;
+        s.deconvPSFSigmaXY = h.nucDeconvPSFSigmaXYInput.Value;
+        s.deconvPSFSigmaZ = h.nucDeconvPSFSigmaZInput.Value;
+        s.deconvPSFSizeXY = h.nucDeconvPSFSizeXYInput.Value;
+        s.deconvPSFSizeZ = h.nucDeconvPSFSizeZInput.Value;
+        s.deconvLRIterations = h.nucDeconvLRIterationsInput.Value;
+        s.deconvLRDamping = h.nucDeconvLRDampingInput.Value;
+        s.deconvWienerNSR = h.nucDeconvWienerNSRInput.Value;
+        s.deconvBlindIterations = h.nucDeconvBlindIterationsInput.Value;
+        s.deconvBlindUnderRelax = h.nucDeconvBlindUnderRelaxInput.Value;
+        s.preprocEnabled = h.nucPreprocEnabledCheck.Value;
+        s.preprocMode = h.nucPreprocessModeDrop.Value;
+        s.preprocProjection = h.nucPreprocessProjectionDrop.Value;
+        s.preprocScale = h.nucPreprocessScaleCheck.Value;
+        s.preprocMethod = h.nucPreprocMethodDrop.Value;
+        s.preprocParam1 = h.nucPreprocParam1Inputs.Value;
+        s.preprocParam2 = h.nucPreprocParam2Inputs.Value;
+        s.preprocParam3 = h.nucPreprocParam3Inputs.Value;
+        s.preprocParam4 = h.nucPreprocParam4Inputs.Value;
+        s.preprocWavelet = h.nucWaveletNameDrop.Value;
+        s.preprocNlmStrength = h.nucNlmFilterStrengthInput.Value;
+        s.preprocNlmSearch = h.nucNlmSearchWindowInput.Value;
+        s.preprocNlmComparison = h.nucNlmComparisonWindowInput.Value;
+        s.preprocClip = h.nucPreprocClipChecks.Value;
+        s.bgEnabled = h.nucBgCorrEnabledCheck.Value;
+        s.bgMode = h.nucBgCorrModeDrop.Value;
+        s.bgProjection = h.nucBgCorrProjectionDrop.Value;
+        s.bgScale = h.nucBgCorrScaleCheck.Value;
+        s.bgMethod = h.nucBgMethodDrop.Value;
+        s.bgParam = h.nucBgParamInput.Value;
+        s.bgClip = h.nucBgCorrClipChecks.Value;
+        s.segEnabled = h.nucSegEnabledCheck.Value;
+        s.segMode = h.nucSegModeDrop.Value;
+        s.segProjection = h.nucSegProjectionDrop.Value;
+        s.segMainMethod = h.nucSegMainMethodDrop.Value;
+        s.segSubMethod = h.nucSegSubMethodDrop.Value;
+        s.segParam1 = h.nucSegParam1Input.Value;
+        s.segAlgorithm = h.nucSegAlgorithmDrop.Value;
+        s.segAlgParam1 = h.nucSegAlgParamInput.Value;
+        s.segAlgParam2 = h.nucSegAlgParam2Input.Value;
+        s.segAlgDefault1 = h.nucSegAlgParamDefaultCheck.Value;
+        s.segAlgDefault2 = h.nucSegAlgParam2DefaultCheck.Value;
+        s.filterEnabled = h.nucFilterEnabledCheck.Value;
+        s.filterSizeEnabled = h.nucFilterSizeEnabledCheck.Value;
+        s.filterMinSize = h.nucFilterMinSizeInput.Value;
+        s.filterSizeUnit = h.nucFilterSizeUnitDrop.Value;
+        s.filterCircularityEnabled = h.nucFilterCircularityEnabledCheck.Value;
+        s.filterMinCircularity = h.nucFilterMinCircularityInput.Value;
+        s.filterSolidityEnabled = h.nucFilterSolidityEnabledCheck.Value;
+        s.filterMinSolidity = h.nucFilterMinSolidityInput.Value;
+        s.excludeEdges = h.nucExcludeEdgesCheck.Value;
+        sig = jsonencode(s);
+    end
+
+    function p = sanitizeFitParams(p)
+        p.gaussFitVoxelWindowSize = sanitizeOddInteger(p.gaussFitVoxelWindowSize, 3, 21, 7);
+        p.gaussFitBgCorrWidth = sanitizeInteger(p.gaussFitBgCorrWidth, 0, 10, 1);
+        p.gaussFitPolyDegree = sanitizeInteger(p.gaussFitPolyDegree, 1, 3, 2);
+        p.gaussFitMaxIterations = sanitizeInteger(p.gaussFitMaxIterations, 10, 1000, 200);
+        p.gaussFitTolerance = sanitizePositive(p.gaussFitTolerance, 1e-12, 1, 1e-6);
+        p.gaussFitRadialRadius = sanitizePositive(p.gaussFitRadialRadius, 0.5, 20, 3);
+    end
+
+    function out = sanitizeOddInteger(in, minVal, maxVal, fallback)
+        out = sanitizeInteger(in, minVal, maxVal, fallback);
+        if mod(out, 2) == 0
+            if out >= maxVal
+                out = out - 1;
+            else
+                out = out + 1;
+            end
+        end
+        out = max(minVal, min(maxVal, out));
+    end
+
+    function out = sanitizeInteger(in, minVal, maxVal, fallback)
+        out = fallback;
+        if isnumeric(in) && isscalar(in) && isfinite(in)
+            out = round(in);
+        end
+        out = max(minVal, min(maxVal, out));
+    end
+
+    function out = sanitizePositive(in, minVal, maxVal, fallback)
+        out = fallback;
+        if isnumeric(in) && isscalar(in) && isfinite(in) && in > 0
+            out = in;
+        end
+        out = max(minVal, min(maxVal, out));
+    end
+
+    function tf = isAbortRequested(figRef)
+        tf = false;
+        try
+            if isempty(figRef) || ~isvalid(figRef)
+                tf = true;
+                return;
+            end
+            h = guidata(figRef);
+            tf = isstruct(h) && isfield(h, 'abortRequested') && logical(h.abortRequested);
+        catch
+            tf = true;
         end
     end
 

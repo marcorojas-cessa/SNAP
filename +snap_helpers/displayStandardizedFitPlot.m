@@ -85,9 +85,9 @@ function createFitGraphs(parent, result, channelColor)
 % Creates the fit visualization graphs based on the fitting method
     
     switch result.fitMethod
-        case {'1D (X,Y,Z)', '1D (X,Y,Z) Gaussian'}
+        case '1D (X,Y,Z) Gaussian'
             create1DFitGraphs(parent, result, channelColor);
-        case {'2D (XY) + 1D (Z)', '2D (XY) + 1D (Z) Gaussian'}
+        case '2D (XY) + 1D (Z) Gaussian'
             create2DPlus1DFitGraphs(parent, result, channelColor);
         case {'3D Gaussian', 'Distorted 3D Gaussian'}
             create3DFitGraphs(parent, result, channelColor);
@@ -1148,7 +1148,7 @@ function createNumericalInfo(parent, result, channel_idx, maxima_idx)
             param_units{end+1} = '';
         else
             % Use proper dimension labels for R²
-            if any(strcmp(result.fitMethod, {'1D (X,Y,Z)', '1D (X,Y,Z) Gaussian', '2D (XY) + 1D (Z)', '2D (XY) + 1D (Z) Gaussian'}))
+            if any(strcmp(result.fitMethod, {'1D (X,Y,Z) Gaussian', '2D (XY) + 1D (Z) Gaussian'}))
                 % For 1D X,Y,Z fits and 2D+1D fits: label as X, Y, Z
                 dimension_labels = {'X', 'Y', 'Z'};
                 for i = 1:length(result.r_squared)

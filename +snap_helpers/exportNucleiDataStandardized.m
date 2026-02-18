@@ -16,9 +16,9 @@ function exportNucleiDataStandardized(nucleusLabels, nucleiMask, outputPath, opt
 %     → Includes computation_id for verification
 %
 %   - When called WITHOUT precomputedMeasurements:
-%     → Calls computeNucleusMeasurements() itself (STANDALONE MODE)
+%     → Calls computeNucleusMeasurements() itself (ON-DEMAND MODE)
 %     → Generates new computation_id
-%     → Backward compatible with old code
+%     → Generates a valid export even when no shared measurements were passed
 %
 % CALLING PATTERN:
 %   From exportData() or SNAP_batch:
@@ -91,10 +91,9 @@ function exportNucleiDataStandardized(nucleusLabels, nucleiMask, outputPath, opt
     if nargin >= 5 && ~isempty(precomputedMeasurements)
         % CONSISTENCY MODE: Use pre-computed measurements
         nucleiData = precomputedMeasurements;
-        fprintf('    Using pre-computed measurements (ensures consistency)\n');
     else
-        % STANDALONE MODE: Compute now (backward compatibility)
-    nucleiData = snap_helpers.computeNucleusMeasurements(nucleusLabels, nucleiMask, options);
+        % ON-DEMAND MODE: Compute now
+        nucleiData = snap_helpers.computeNucleusMeasurements(nucleusLabels, nucleiMask, options);
     end
     
     % Extract variables for CSV export
@@ -195,6 +194,10 @@ function exportNucleiDataStandardized(nucleusLabels, nucleiMask, outputPath, opt
     %% Create parameter receipt (TXT)
     txtFilename = [outputPath '_receipt.txt'];
     fid = fopen(txtFilename, 'w');
+    if fid == -1
+        warning('Could not create nuclei export receipt file: %s', txtFilename);
+        return;
+    end
     
     fprintf(fid, '========================================\n');
     fprintf(fid, 'SNAP Nuclei Segmentation Parameters\n');
@@ -226,7 +229,11 @@ function exportNucleiDataStandardized(nucleusLabels, nucleiMask, outputPath, opt
     fprintf(fid, '\n');
     
     fprintf(fid, '--- Exported Fields ---\n');
-    fprintf(fid, 'Mandatory: image_name, nucleus_id, centroid_x, centroid_y, centroid_z\n');
+    if include_image_name
+        fprintf(fid, 'Mandatory: image_name, nucleus_id, centroid_x, centroid_y, centroid_z\n');
+    else
+        fprintf(fid, 'Mandatory: nucleus_id, centroid_x, centroid_y, centroid_z\n');
+    end
     if options.is_3d
         fprintf(fid, 'Size: volume_voxels');
         if has_spacing
@@ -293,4 +300,3 @@ function exportNucleiDataStandardized(nucleusLabels, nucleiMask, outputPath, opt
     fclose(fid);
     % Receipt saved silently
 end
-

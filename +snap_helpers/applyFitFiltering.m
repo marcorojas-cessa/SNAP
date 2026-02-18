@@ -90,7 +90,7 @@ function [filtered_fits, filter_mask] = applyFitFiltering(fits, channel_idx, han
         max_amplitude = handles.fitFilterAmplitudeMaxInputs(channel_idx).Value;
         if isfield(fits, 'amplitude')
             amplitude_values = [fits.amplitude];
-            % Filter out NaN values for radial symmetry compatibility
+            % Filter out NaN values from methods without amplitude output.
             valid_amplitudes = ~isnan(amplitude_values);
             amplitude_mask = valid_amplitudes & (amplitude_values >= min_amplitude) & (amplitude_values <= max_amplitude);
             filter_mask = filter_mask & amplitude_mask;
@@ -103,17 +103,12 @@ function [filtered_fits, filter_mask] = applyFitFiltering(fits, channel_idx, han
     if handles.fitFilterIntensityEnabledChecks(channel_idx).Value
         min_intensity = handles.fitFilterIntensityMinInputs(channel_idx).Value;
         max_intensity = handles.fitFilterIntensityMaxInputs(channel_idx).Value;
-        % Check for both 'intensity' and 'integratedIntensity' field names (for compatibility)
-        if isfield(fits, 'intensity')
-            intensity_values = [fits.intensity];
-            intensity_mask = (intensity_values >= min_intensity) & (intensity_values <= max_intensity);
-            filter_mask = filter_mask & intensity_mask;
-        elseif isfield(fits, 'integratedIntensity')
+        if isfield(fits, 'integratedIntensity')
             intensity_values = [fits.integratedIntensity];
             intensity_mask = (intensity_values >= min_intensity) & (intensity_values <= max_intensity);
             filter_mask = filter_mask & intensity_mask;
         else
-            warning('Intensity values not available in fit results. Skipping intensity filtering.');
+            warning('Integrated intensity values not available in fit results. Skipping intensity filtering.');
         end
     end
     

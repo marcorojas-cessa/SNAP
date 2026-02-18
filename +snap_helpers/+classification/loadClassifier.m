@@ -111,7 +111,7 @@ function [model, features, featureInfo, trainStats, fittingMethod, metadata, suc
     if isfield(data, 'normParams')
         normParams = data.normParams;
     else
-        % Backwards compatibility: check trainStats for normalization info
+        % Check trainStats for normalization info
         if isfield(trainStats, 'featureMeans') && isfield(trainStats, 'featureStds')
             normParams.mu = trainStats.featureMeans;
             normParams.sigma = trainStats.featureStds;
@@ -119,7 +119,7 @@ function [model, features, featureInfo, trainStats, fittingMethod, metadata, suc
         end
     end
     
-    % Check version compatibility
+    % Check version alignment
     if isfield(data, 'version')
         metadata.fileVersion = data.version;
     else

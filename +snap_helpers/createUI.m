@@ -426,7 +426,7 @@ handles.nucPreprocParam4Inputs = dropdownFcn(nucPreprocGrid, 'Items', {'soft', '
 handles.nucPreprocParam4Inputs.Layout.Row = 6;
 handles.nucPreprocParam4Inputs.Layout.Column = 2;
 
-% Store original parameter handles for backward compatibility
+% Link nuclei preprocessing controls used by processing/export modules
 handles.nucGaussInput = handles.nucPreprocParam1Inputs;
 handles.nucMedianInput = handles.nucPreprocParam1Inputs;
 handles.nucWaveletNameDrop = dropdownFcn(nucPreprocGrid, 'Items', {'haar','db2','db3','db4','sym2','sym3','sym4','coif1'}, 'Value', lastUsed.nucWaveletName, 'Tag', 'nuc_preproc_param_ctrl', 'Tooltip', 'Type of wavelet.', 'Visible', 'off');
@@ -597,14 +597,14 @@ handles.nucSegAlgParam2DefaultCheck = checkboxFcn(methodsGrid, 'Text', 'Default'
 handles.nucSegAlgParam2DefaultCheck.Layout.Row = 6;
 handles.nucSegAlgParam2DefaultCheck.Layout.Column = 3;
 
-% Store original parameter handles for backward compatibility
+% Link segmentation controls used by processing/export modules
 handles.nucSegAbsoluteInput = handles.nucSegParam1Input;
 handles.nucSegStdMultiplierInput = handles.nucSegParam1Input;
 handles.nucSegOffsetInput = handles.nucSegParam1Input;
 handles.nucSegLocalAlgorithmDrop = handles.nucSegAlgorithmDrop;
 % Note: nucSegLocalRadiusInput removed - radius now handled by algorithm-specific parameters
 
-% Note: Old Adaptive Thresholding Panel removed - replaced by Auto Local Threshold methods
+% Adaptive thresholding is provided by Auto Local Threshold methods in this panel.
 
 % Show Segmentation Checkbox (Row 3)
 handles.nucShowSegCheck = checkboxFcn(segGrid, 'Text', 'Show Segmentation Overlay', 'Value', lastUsed.nucShowSeg);
@@ -888,7 +888,7 @@ for k = 1:Nmax
     handles.preprocParam4Inputs(k).Layout.Row = 6;
     handles.preprocParam4Inputs(k).Layout.Column = 2;
     
-    % Store original parameter handles for backward compatibility
+    % Link preprocessing controls used by processing/export modules
     handles.gaussInputs(k) = handles.preprocParam1Inputs(k);
     handles.medianInputs(k) = handles.preprocParam1Inputs(k);
     handles.waveletNameDrops(k) = dropdownFcn(preprocGrid, 'Items', {'haar','db2','db3','db4','sym2','sym3','sym4','coif1'}, 'Value', lastUsed.waveletName{k}, 'Tag', ['preproc_param_ctrl_' num2str(k)], 'Tooltip', 'Type of wavelet.', 'Visible', 'off');

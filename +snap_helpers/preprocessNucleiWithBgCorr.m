@@ -20,9 +20,12 @@ function preprocessed_nuc = preprocessNucleiWithBgCorr(handles)
             psf_file = handles.nucDeconvPSFPathText.Value;
             if ~isempty(psf_file) && isfile(psf_file)
                 psf_raw = double(tiffreadVolume(psf_file));
-                % Crop/pad PSF to match image dimensions
-                psf = cropPSFToImage(psf_raw, size(raw_img));
-                psf = psf / sum(psf(:)); % Normalize
+                psf_size_xy = handles.nucDeconvPSFSizeXYInput.Value;
+                psf_size_z = handles.nucDeconvPSFSizeZInput.Value;
+                psf = prepareLoadedPSF(psf_raw, raw_img, psf_size_xy, psf_size_z);
+                if isempty(psf)
+                    warning('Loaded nuclei PSF is invalid. Skipping deconvolution.');
+                end
             else
                 warning('Nuclei PSF file not found. Skipping deconvolution.');
                 psf = [];
@@ -83,10 +86,10 @@ function preprocessed_nuc = preprocessNucleiWithBgCorr(handles)
         
         if strcmp(mode, 'On Z-Projection')
             proj_type = handles.nucPreprocessProjectionDrop.Value;
-            img_2d = projectZ(raw_img, proj_type);
+            img_2d = projectZ(img_after_deconv, proj_type);
             img_after_preprocess = apply_nuc_2d_preproc(img_2d, handles);
         else % 3D or 2D Slice-by-slice
-            img_3d = raw_img;
+            img_3d = img_after_deconv;
             is_3d_mode = strcmp(mode, '3D');
             method = handles.nucPreprocMethodDrop.Value;
 
@@ -395,43 +398,56 @@ function psf = generate3DPSF(sigma_xy, sigma_z, size_xy, size_z)
     psf = psf / sum(psf(:)); % Normalize
 end
 
-function psf_out = cropPSFToImage(psf_in, img_size)
-    % Crop or pad PSF to match image dimensions (centered on middle frame)
-    psf_size = size(psf_in);
-    if length(psf_size) == 2, psf_size(3) = 1; end
-    if length(img_size) == 2, img_size(3) = 1; end
-    
-    psf_center = ceil(psf_size / 2);
-    img_center = ceil(img_size / 2);
-    psf_out = zeros(img_size);
-    
-    for dim = 1:3
-        if psf_size(dim) > img_size(dim)
-            start_idx(dim) = psf_center(dim) - floor(img_size(dim)/2);
-            end_idx(dim) = start_idx(dim) + img_size(dim) - 1;
-        else
-            start_idx(dim) = 1;
-            end_idx(dim) = psf_size(dim);
+function psf = prepareLoadedPSF(psf_in, image_in, radius_xy, radius_z)
+    % Build a compact PSF kernel around the peak intensity.
+    psf = double(psf_in);
+    psf(~isfinite(psf)) = 0;
+    psf(psf < 0) = 0;
+    if isempty(psf)
+        psf = [];
+        return;
+    end
+
+    if ~isnumeric(radius_xy) || ~isscalar(radius_xy) || ~isfinite(radius_xy)
+        radius_xy = 5;
+    end
+    if ~isnumeric(radius_z) || ~isscalar(radius_z) || ~isfinite(radius_z)
+        radius_z = 3;
+    end
+    radius_xy = max(1, round(abs(radius_xy)));
+    radius_z = max(0, round(abs(radius_z)));
+    is_image_3d = (ndims(image_in) >= 3) && (size(image_in, 3) > 1);
+
+    if is_image_3d
+        if ndims(psf) < 3
+            psf = reshape(psf, size(psf, 1), size(psf, 2), 1);
         end
-    end
-    
-    if all(psf_size >= img_size)
-        psf_out = psf_in(start_idx(1):end_idx(1), start_idx(2):end_idx(2), start_idx(3):end_idx(3));
+        [~, peak_idx] = max(psf(:));
+        [r0, c0, z0] = ind2sub(size(psf), peak_idx);
+        r1 = max(1, r0 - radius_xy); r2 = min(size(psf, 1), r0 + radius_xy);
+        c1 = max(1, c0 - radius_xy); c2 = min(size(psf, 2), c0 + radius_xy);
+        z1 = max(1, z0 - radius_z);  z2 = min(size(psf, 3), z0 + radius_z);
+        psf = psf(r1:r2, c1:c2, z1:z2);
     else
-        out_start = max(1, img_center - psf_center + 1);
-        out_end = min(img_size, out_start + psf_size - 1);
-        psf_start = max(1, psf_center - img_center + 1);
-        psf_end = min(psf_size, psf_start + (out_end - out_start));
-        psf_out(out_start(1):out_end(1), out_start(2):out_end(2), out_start(3):out_end(3)) = ...
-            psf_in(psf_start(1):psf_end(1), psf_start(2):psf_end(2), psf_start(3):psf_end(3));
+        if ndims(psf) >= 3
+            psf = max(psf, [], 3);
+        end
+        [~, peak_idx] = max(psf(:));
+        [r0, c0] = ind2sub(size(psf), peak_idx);
+        r1 = max(1, r0 - radius_xy); r2 = min(size(psf, 1), r0 + radius_xy);
+        c1 = max(1, c0 - radius_xy); c2 = min(size(psf, 2), c0 + radius_xy);
+        psf = psf(r1:r2, c1:c2);
     end
-    
-    if sum(psf_out(:)) > 0
-        psf_out = psf_out / sum(psf_out(:));
+
+    total = sum(psf(:));
+    if ~isfinite(total) || total <= 0
+        psf = [];
+        return;
     end
+    psf = psf ./ total;
 end
 
-%% Helper Functions for SNAP_batch compatibility
+%% Shared helper utilities
 
 function val = getScalar(input)
     % Ensure value is a proper scalar (handle cells, arrays, etc.)

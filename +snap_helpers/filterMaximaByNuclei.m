@@ -25,6 +25,9 @@ function [filteredCoords, keepMask] = filterMaximaByNuclei(maximaCoords, nucleiM
         keepMask = [];
         return;
     end
+
+    % Normalize filter mode once (avoid per-point warning noise)
+    normalized_mode = normalizeFilterMode(mode);
     
     % Determine if nuclei mask is 2D or 3D
     is_2d_mask = ndims(nucleiMask) == 2;
@@ -68,18 +71,14 @@ function [filteredCoords, keepMask] = filterMaximaByNuclei(maximaCoords, nucleiM
             end
         end
         
-        % Apply filtering based on mode, but only for valid coordinates
+        % Apply filtering based on normalized mode, but only for valid coordinates
         if is_valid_coordinate
-            if strcmp(mode, 'Include Inside Nuclei')
+            if strcmp(normalized_mode, 'Include Inside Nuclei')
                 % Keep only maxima inside nuclei
                 keep_indices(i) = is_inside_nuclei;
-            elseif strcmp(mode, 'Exclude Inside Nuclei')
+            else
                 % Keep only maxima outside nuclei
                 keep_indices(i) = ~is_inside_nuclei;
-            else
-                % Unknown mode - KEEP all by default (safer for backward compatibility)
-                warning('Unknown nuclei filtering mode: %s. No filtering applied.', mode);
-                keep_indices(i) = true;
             end
         else
             % Invalid coordinates (out of bounds) - exclude them
@@ -92,3 +91,30 @@ function [filteredCoords, keepMask] = filterMaximaByNuclei(maximaCoords, nucleiM
     keepMask = keep_indices;
 end
 
+function normalized_mode = normalizeFilterMode(mode)
+% Normalize nuclei filtering mode and collapse supported aliases.
+    if isempty(mode)
+        warning('Nuclei filter mode was empty. Using "Include Inside Nuclei".');
+        normalized_mode = 'Include Inside Nuclei';
+        return;
+    end
+
+    if iscell(mode)
+        mode = mode{1};
+    end
+    mode_str = char(string(mode));
+    mode_str = strtrim(mode_str);
+    mode_key = lower(mode_str);
+
+    include_aliases = {'include inside nuclei', 'include', 'inside', 'inside nuclei', 'keep inside nuclei'};
+    exclude_aliases = {'exclude inside nuclei', 'exclude', 'outside', 'outside nuclei', 'remove inside nuclei'};
+
+    if ismember(mode_key, include_aliases)
+        normalized_mode = 'Include Inside Nuclei';
+    elseif ismember(mode_key, exclude_aliases)
+        normalized_mode = 'Exclude Inside Nuclei';
+    else
+        warning('Unknown nuclei filtering mode "%s". Using "Include Inside Nuclei".', mode_str);
+        normalized_mode = 'Include Inside Nuclei';
+    end
+end

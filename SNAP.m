@@ -22,18 +22,6 @@ function SNAP
         lastUsed.navPanelIndex{k} = 0; % Channel navigation
     end
     
-    % --- Migrate Old Fit Method Names ---
-    % Update old fit method names to new names with "Gaussian" suffix
-    if isfield(lastUsed, 'gaussFitMethod')
-        for k = 1:length(lastUsed.gaussFitMethod)
-            if strcmp(lastUsed.gaussFitMethod{k}, '1D (X,Y,Z)')
-                lastUsed.gaussFitMethod{k} = '1D (X,Y,Z) Gaussian';
-            elseif strcmp(lastUsed.gaussFitMethod{k}, '2D (XY) + 1D (Z)')
-                lastUsed.gaussFitMethod{k} = '2D (XY) + 1D (Z) Gaussian';
-            end
-        end
-    end
-    
     % --- Create UI ---
     try
         handles = snap_helpers.createUI(Nmax, lastUsed);
@@ -44,7 +32,12 @@ function SNAP
     
     % --- Initial UI State (BEFORE setting callbacks to prevent infinite recursion) ---
     guidata(handles.fig, handles); % Store handles before first call
-    snap_helpers.updateControls(handles.fig); % Initialize control visibility and state
+    try
+        snap_helpers.updateControls(handles.fig); % Initialize control visibility and state
+    catch ME
+        warning('Initial UI control-state update failed: %s', ME.message);
+        % Continue startup so critical callbacks (e.g., Browse buttons) still bind.
+    end
     handles = guidata(handles.fig); % Re-fetch handles after update
     
     % Initialize export checklist (makes "Parameters" export available from start)
@@ -84,18 +77,6 @@ handles.nucSegAlgParamInput.ValueChangedFcn = @(src,evt) snap_helpers.updateCont
 handles.nucSegAlgParam2Input.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
 handles.nucSegAlgParamDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
 handles.nucSegAlgParam2DefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-
-% Default checkbox callbacks for algorithm parameters
-handles.nucSegBernsenContrastDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegMeanCDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegMedianCDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegMidGreyCDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegNiblackKDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegNiblackCDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegPhansalkarKDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegPhansalkarRDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegSauvolaKDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-handles.nucSegSauvolaRDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
 
     % Nuclei pre-processing callbacks
     handles.nucPreprocessModeDrop.ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
@@ -156,89 +137,91 @@ handles.nucSegSauvolaRDefaultCheck.ValueChangedFcn = @(src,evt) snap_helpers.upd
     handles.nucBrowseButton.ButtonPushedFcn = @(src,evt) loadFileCallback(handles.fig, 'nuc');
 
     for i = 1:Nmax
-        handles.channelBrowseButtons(i).ButtonPushedFcn = @(src,evt) loadFileCallback(handles.fig, 'channel', i);
+        channelIdx = i;
+        handles.channelBrowseButtons(channelIdx).ButtonPushedFcn = @(src,evt) loadFileCallback(handles.fig, 'channel', channelIdx);
         
         % Navigation button callbacks
-        handles.upButtons(i).ButtonPushedFcn = @(src,evt) snap_helpers.navigatePanels(handles.fig, i, 'up');
-        handles.downButtons(i).ButtonPushedFcn = @(src,evt) snap_helpers.navigatePanels(handles.fig, i, 'down');
+        handles.upButtons(channelIdx).ButtonPushedFcn = @(src,evt) snap_helpers.navigatePanels(handles.fig, channelIdx, 'up');
+        handles.downButtons(channelIdx).ButtonPushedFcn = @(src,evt) snap_helpers.navigatePanels(handles.fig, channelIdx, 'down');
         
         % Callbacks that trigger a full UI state update
         if isfield(handles, 'deconvMethodDrops')
-            handles.deconvMethodDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-            handles.deconvPSFSourceDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+            handles.deconvMethodDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+            handles.deconvPSFSourceDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         end
         if isfield(handles, 'deconvPSFBrowseButtons')
-            handles.deconvPSFBrowseButtons(i).ButtonPushedFcn = @(src,evt) browsePSFFile(handles.fig, i);
+            handles.deconvPSFBrowseButtons(channelIdx).ButtonPushedFcn = @(src,evt) browsePSFFile(handles.fig, channelIdx);
         end
-        handles.preprocessModeDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.preprocMethodDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.preprocClipChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.preprocessModeDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.preprocMethodDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.preprocClipChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         
         % Channel Non-Local Means parameter callbacks
-        handles.nlmFilterStrengthInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.nlmSearchWindowInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.nlmComparisonWindowInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.nlmFilterStrengthInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.nlmSearchWindowInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.nlmComparisonWindowInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         
         % Channel Wavelet Denoising parameter callbacks
-        handles.waveletNameDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.waveletLevelInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.waveletThresholdRuleDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.waveletThresholdMethodDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.waveletNameDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.waveletLevelInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.waveletThresholdRuleDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.waveletThresholdMethodDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         
         
-        handles.bgCorrModeDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.bgMethodDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.bgCorrClipChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.maximaModeDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.maximaMethodDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.bgCorrModeDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.bgMethodDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.bgCorrClipChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.maximaModeDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.maximaMethodDrops(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
 
-        handles.xySpacingInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.zSpacingInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.xySpacingInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.zSpacingInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         
         % Callbacks for Local Maxima Fitting controls
-        handles.gaussFitBgCorrMethodDrop(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.gaussFitMethodDrop(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.gaussFitBgCorrMethodDrop(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.gaussFitMethodDrop(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
 
         % Callbacks for Fit Filtering controls
-    handles.fitFilterRSquaredEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterRSquaredMinInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterRSquaredMaxInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterSigmaSumEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterSigmaSumMinInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterSigmaSumMaxInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterAmplitudeEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterAmplitudeMinInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterAmplitudeMaxInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterIntensityEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterIntensityMinInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterIntensityMaxInputs(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterRSquaredEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterRSquaredMinInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterRSquaredMaxInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterSigmaSumEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterSigmaSumMinInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterSigmaSumMaxInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterAmplitudeEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterAmplitudeMinInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterAmplitudeMaxInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterIntensityEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterIntensityMinInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterIntensityMaxInputs(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
 
         % Channel panel enable/disable callbacks - instantly update UI state
         if isfield(handles, 'deconvEnabledChecks')
-            handles.deconvEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+            handles.deconvEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         end
-        handles.preprocEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.bgCorrEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.maximaEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.gaussFitEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
-        handles.fitFilterEnabledChecks(i).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.preprocEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.bgCorrEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.maximaEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.gaussFitEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
+        handles.fitFilterEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateControls(handles.fig);
         
         % Classification callbacks
-        handles.classifyEnabledChecks(i).ValueChangedFcn = @(src,evt) updateClassificationControls(i, handles.fig);
-        handles.classifyLoadButtons(i).ButtonPushedFcn = @(src,evt) loadClassifierForChannel(i, handles.fig);
-        handles.classifyTrainButtons(i).ButtonPushedFcn = @(src,evt) SNAP_classify();
-        handles.classifyApplyButtons(i).ButtonPushedFcn = @(src,evt) applyClassifierToChannel(i, handles.fig);
-        handles.classifySelectFeaturesButtons(i).ButtonPushedFcn = @(src,evt) selectClassifierFeatures(i, handles.fig);
+        handles.classifyEnabledChecks(channelIdx).ValueChangedFcn = @(src,evt) updateClassificationControls(channelIdx, handles.fig);
+        handles.classifyLoadButtons(channelIdx).ButtonPushedFcn = @(src,evt) loadClassifierForChannel(channelIdx, handles.fig);
+        handles.classifyTrainButtons(channelIdx).ButtonPushedFcn = @(src,evt) SNAP_classify();
+        handles.classifyApplyButtons(channelIdx).ButtonPushedFcn = @(src,evt) applyClassifierToChannel(channelIdx, handles.fig);
+        handles.classifySelectFeaturesButtons(channelIdx).ButtonPushedFcn = @(src,evt) selectClassifierFeatures(channelIdx, handles.fig);
     end
     
     % Callbacks for preview controls
     for i = 1:5
-        handles.previewContentDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, i);
-        handles.previewModeDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, i);
-        handles.zSliders(i).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, i);
-        handles.previewProjectionDrops(i).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, i);
-        handles.brightnessSliders(i).ValueChangedFcn = @(src,evt) snap_helpers.updateBrightness(src, handles.fig, i);
-        handles.brightnessResets(i).ButtonPushedFcn = @(src,evt) snap_helpers.resetBrightness(src, handles.fig, i);
+        previewIdx = i;
+        handles.previewContentDrops(previewIdx).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, previewIdx);
+        handles.previewModeDrops(previewIdx).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, previewIdx);
+        handles.zSliders(previewIdx).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, previewIdx);
+        handles.previewProjectionDrops(previewIdx).ValueChangedFcn = @(src,evt) snap_helpers.redrawPreview(handles.fig, previewIdx);
+        handles.brightnessSliders(previewIdx).ValueChangedFcn = @(src,evt) snap_helpers.updateBrightness(src, handles.fig, previewIdx);
+        handles.brightnessResets(previewIdx).ButtonPushedFcn = @(src,evt) snap_helpers.resetBrightness(src, handles.fig, previewIdx);
     end
     
     % Store final handles after all callbacks are set
@@ -271,28 +254,16 @@ function closeSNAP(fig_handle)
         % Try to get handles for cleanup
         handles = guidata(fig_handle);
     
-    % Clean up any active z-playback timer
+        % Clean up app timers
         if isfield(handles, 'zPlaybackTimer') && isvalid(handles.zPlaybackTimer)
-        try
+            try
                 stop(handles.zPlaybackTimer);
                 delete(handles.zPlaybackTimer);
                 fprintf('Z-playback timer cleaned up.\n');
             catch
                 % Ignore timer cleanup errors
+            end
         end
-    end
-    
-        % Clean up any other timers
-        timers_list = timerfind;
-        if ~isempty(timers_list)
-            try
-                stop(timers_list);
-                delete(timers_list);
-        catch
-                % Ignore timer cleanup errors
-        end
-    end
-        
         catch
         % If we can't get handles, just continue to close
         fprintf('Could not get handles, proceeding with close.\n');
@@ -409,26 +380,9 @@ function loadFileCallback(fig, fileType, varargin)
     try
         snap_helpers.loadFile(fig, fileType, varargin{:});
     catch ME
-        fprintf('Warning: Error loading file with package call: %s\n', ME.message);
-        % Try alternative approach if package path fails
-        try
-            % Get the current file directory and add to path temporarily
-            current_dir = fileparts(mfilename('fullpath'));
-            helpers_dir = fullfile(current_dir, '+snap_helpers');
-            if exist(helpers_dir, 'dir')
-                addpath(helpers_dir);
-                loadFile(fig, fileType, varargin{:});
-                rmpath(helpers_dir);
-                fprintf('Successfully loaded file using alternative path method\n');
-            else
-                error('Cannot find snap_helpers directory at: %s', helpers_dir);
-            end
-        catch ME2
-            fprintf('Error: Failed to load file: %s\n', ME2.message);
-            errordlg(sprintf('Failed to load file: %s\n\nPlease ensure you are running MATLAB from the correct directory:\n%s', ME2.message, current_dir), 'File Load Error');
-        end
-        end
+        errordlg(sprintf('Failed to load file: %s', ME.message), 'File Load Error');
     end
+end
 
 function browsePSFFile(fig_handle, channel_idx)
     % Browse for PSF file for deconvolution
@@ -531,6 +485,8 @@ function applyParametersToUI(handles, params)
     % This function directly sets UI element values from loaded parameters
     
     try
+        params = normalizeParameterValues(params);
+
         % === BASIC SETTINGS ===
         if isfield(params, 'numChannels') && isfield(handles, 'numChanDrop')
             handles.numChanDrop.Value = num2str(params.numChannels);
@@ -650,8 +606,8 @@ function applyParametersToUI(handles, params)
         if isfield(params, 'nucBgCorrProjection') && isfield(handles, 'nucBgCorrProjectionDrop')
             handles.nucBgCorrProjectionDrop.Value = params.nucBgCorrProjection;
         end
-        if isfield(params, 'nucBgCorrClipAtZero') && isfield(handles, 'nucBgCorrClipCheck')
-            handles.nucBgCorrClipCheck.Value = params.nucBgCorrClipAtZero;
+        if isfield(params, 'nucBgCorrClipAtZero') && isfield(handles, 'nucBgCorrClipChecks')
+            handles.nucBgCorrClipChecks.Value = params.nucBgCorrClipAtZero;
         end
         
         % === NUCLEI SEGMENTATION ===
@@ -670,8 +626,8 @@ function applyParametersToUI(handles, params)
         if isfield(params, 'nucSegSubMethod') && isfield(handles, 'nucSegSubMethodDrop')
             handles.nucSegSubMethodDrop.Value = params.nucSegSubMethod;
         end
-        if isfield(params, 'nucSegAbsoluteThreshold') && isfield(handles, 'nucSegAbsoluteThresholdInput')
-            handles.nucSegAbsoluteThresholdInput.Value = params.nucSegAbsoluteThreshold;
+        if isfield(params, 'nucSegAbsoluteThreshold') && isfield(handles, 'nucSegAbsoluteInput')
+            handles.nucSegAbsoluteInput.Value = params.nucSegAbsoluteThreshold;
         end
         if isfield(params, 'nucSegStdMultiplier') && isfield(handles, 'nucSegStdMultiplierInput')
             handles.nucSegStdMultiplierInput.Value = params.nucSegStdMultiplier;
@@ -838,10 +794,10 @@ function applyParametersToUI(handles, params)
             handles.nucInclusionExclusionEnabledCheck.Value = params.nucInclusionExclusionEnabled;
         end
         if isfield(params, 'nucInclusionExclusionMode') && isfield(handles, 'nucInclusionExclusionModeDrop')
-            handles.nucInclusionExclusionModeDrop.Value = params.nucInclusionExclusionMode;
+            setDropdownValueIfValid(handles.nucInclusionExclusionModeDrop, params.nucInclusionExclusionMode, 'Include Inside Nuclei');
         end
         if isfield(params, 'nucInclusionExclusionApplyTo') && isfield(handles, 'nucInclusionExclusionApplyDrop')
-            handles.nucInclusionExclusionApplyDrop.Value = params.nucInclusionExclusionApplyTo;
+            setDropdownValueIfValid(handles.nucInclusionExclusionApplyDrop, params.nucInclusionExclusionApplyTo, 'All Channels');
         end
         
         % === CHANNEL PARAMETERS ===
@@ -1124,7 +1080,7 @@ function applyParametersToUI(handles, params)
     
         % Export settings
         if isfield(params, 'exportImageFormat') && isfield(handles, 'exportImageFormatDrop')
-            handles.exportImageFormatDrop.Value = params.exportImageFormat;
+            setDropdownValueIfValid(handles.exportImageFormatDrop, params.exportImageFormat, 'TIFF');
         end
         
     catch ME
@@ -1133,6 +1089,314 @@ function applyParametersToUI(handles, params)
         for i = 1:length(ME.stack)
             fprintf('  %s (line %d)\n', ME.stack(i).file, ME.stack(i).line);
         end
+    end
+end
+
+function params = normalizeParameterValues(params)
+% Normalize loaded parameter strings to current UI dropdown values.
+    mode_items = {'3D', '2D (Slice-by-slice)', 'On Z-Projection'};
+    projection_items = {'Max', 'Min', 'Mean', 'Median'};
+    preprocess_items = {'None', 'Gaussian', 'Median', 'Non-Local Means', 'Wavelet Denoising'};
+    bg_items = {'None', 'Gaussian', 'Rolling-ball', 'Top-hat'};
+    wavelet_items = {'haar', 'db2', 'db3', 'db4', 'sym2', 'sym3', 'sym4', 'coif1'};
+    wavelet_rule_items = {'sqtwolog', 'rigrsure', 'heursure', 'minimaxi'};
+    wavelet_method_items = {'soft', 'hard'};
+    seg_main_items = {'Absolute', 'Mean', 'Median', 'Auto Local Threshold'};
+    seg_sub_items = {'Std Multiplier', 'Absolute Offset'};
+    seg_alg_items = {'Bernsen', 'Contrast', 'Mean', 'Median', 'MidGrey', 'Niblack', 'Otsu', 'Phansalkar', 'Sauvola'};
+    maxima_method_items = {'Simple Regional', 'Extended Maxima', 'Laplacian of Gaussian'};
+    maxima_color_items = {'Red', 'Green', 'Blue', 'Yellow', 'Magenta', 'Cyan'};
+    deconv_method_items = {'Lucy-Richardson', 'Wiener', 'Blind'};
+    psf_source_items = {'Generate', 'Load File'};
+    fit_bg_items = {'Mean Surrounding Subtraction', 'Local Plane Fitting', 'Local Polynomial Fitting'};
+    fit_method_items = {'1D (X,Y,Z) Gaussian', '2D (XY) + 1D (Z) Gaussian', '3D Gaussian', 'Distorted 3D Gaussian', 'Radial Symmetry'};
+    filter_mode_items = {'Include Inside Nuclei', 'Exclude Inside Nuclei'};
+    filter_unit_items = {'pixels', 'voxels', 'microns^2', 'microns^3'};
+    export_format_items = {'TIFF', 'PNG', 'JPEG'};
+
+    % Nuclei-level dropdowns
+    params = normalizeDropdownField(params, 'nucPreProcMode', mode_items, '2D (Slice-by-slice)', @normalizeModeValue);
+    params = normalizeDropdownField(params, 'nucPreProcProjection', projection_items, 'Max');
+    params = normalizeDropdownField(params, 'nucPreProcMethod', preprocess_items, 'None');
+    params = normalizeDropdownField(params, 'nucWaveletName', wavelet_items, 'haar');
+    params = normalizeDropdownField(params, 'nucWaveletThresholdRule', wavelet_rule_items, 'sqtwolog');
+    params = normalizeDropdownField(params, 'nucWaveletThresholdMethod', wavelet_method_items, 'soft');
+    params = normalizeDropdownField(params, 'nucBgCorrMode', mode_items, '2D (Slice-by-slice)', @normalizeModeValue);
+    params = normalizeDropdownField(params, 'nucBgCorrProjection', projection_items, 'Max');
+    params = normalizeDropdownField(params, 'nucBgMethod', bg_items, 'None');
+    params = normalizeDropdownField(params, 'nucSegMode', mode_items, '2D (Slice-by-slice)', @normalizeModeValue);
+    params = normalizeDropdownField(params, 'nucSegProjection', projection_items, 'Max');
+    params = normalizeDropdownField(params, 'nucSegMainMethod', seg_main_items, 'Absolute', @normalizeSegMainMethodValue);
+    params = normalizeDropdownField(params, 'nucSegSubMethod', seg_sub_items, 'Std Multiplier', @normalizeSegSubMethodValue);
+    params = normalizeDropdownField(params, 'nucSegLocalAlgorithm', seg_alg_items, 'Otsu');
+    params = normalizeDropdownField(params, 'nucFilterSizeUnit', filter_unit_items, 'pixels');
+    params = normalizeDropdownField(params, 'nucInclusionExclusionMode', filter_mode_items, 'Include Inside Nuclei', @normalizeNucleiFilterModeValue);
+    params = normalizeDropdownField(params, 'nucInclusionExclusionApplyTo', {'All Channels'}, 'All Channels', @normalizeApplyTargetValue);
+    params = normalizeDropdownField(params, 'nucDeconvMethod', deconv_method_items, 'Lucy-Richardson');
+    params = normalizeDropdownField(params, 'nucDeconvPSFSource', psf_source_items, 'Generate');
+    params = normalizeDropdownField(params, 'exportImageFormat', export_format_items, 'TIFF');
+
+    % Channel-level dropdown cell arrays
+    params = normalizeDropdownCellField(params, 'deconvMethod', deconv_method_items, 'Lucy-Richardson');
+    params = normalizeDropdownCellField(params, 'deconvPSFSource', psf_source_items, 'Generate');
+    params = normalizeDropdownCellField(params, 'preProcMode', mode_items, '2D (Slice-by-slice)', @normalizeModeValue);
+    params = normalizeDropdownCellField(params, 'preProcProjection', projection_items, 'Max');
+    params = normalizeDropdownCellField(params, 'preProcMethod', preprocess_items, 'None');
+    params = normalizeDropdownCellField(params, 'waveletName', wavelet_items, 'haar');
+    params = normalizeDropdownCellField(params, 'waveletThresholdRule', wavelet_rule_items, 'sqtwolog');
+    params = normalizeDropdownCellField(params, 'waveletThresholdMethod', wavelet_method_items, 'soft');
+    params = normalizeDropdownCellField(params, 'bgCorrMode', mode_items, '2D (Slice-by-slice)', @normalizeModeValue);
+    params = normalizeDropdownCellField(params, 'bgCorrProjection', projection_items, 'Max');
+    params = normalizeDropdownCellField(params, 'bgMethod', bg_items, 'None');
+    params = normalizeDropdownCellField(params, 'maximaMode', mode_items, '2D (Slice-by-slice)', @normalizeModeValue);
+    params = normalizeDropdownCellField(params, 'maximaProjection', projection_items, 'Max');
+    params = normalizeDropdownCellField(params, 'maximaMethod', maxima_method_items, 'Simple Regional');
+    params = normalizeDropdownCellField(params, 'maximaColor', maxima_color_items, 'Red');
+    params = normalizeDropdownCellField(params, 'gaussFitBgCorrMethod', fit_bg_items, 'Mean Surrounding Subtraction');
+    params = normalizeDropdownCellField(params, 'gaussFitMethod', fit_method_items, '1D (X,Y,Z) Gaussian', @normalizeGaussFitMethodValue);
+    params = normalizeChannelFieldTypes(params);
+end
+
+function params = normalizeChannelFieldTypes(params)
+% Coerce channel-level fields into cell arrays for legacy compatibility.
+% Older parameter files may store numeric/logical vectors directly.
+    channel_fields = { ...
+        'xySpacing', 'zSpacing', ...
+        'deconvEnabled', 'deconvMethod', 'deconvLRIterations', 'deconvLRDamping', ...
+        'deconvWienerNSR', 'deconvBlindIterations', 'deconvBlindUnderRelax', ...
+        'deconvPSFSource', 'deconvPSFFilePath', 'deconvPSFSigmaXY', 'deconvPSFSigmaZ', ...
+        'deconvPSFSizeXY', 'deconvPSFSizeZ', ...
+        'preprocEnabled', 'preProcMode', 'preProcProjection', 'preProcScale', ...
+        'preProcMethod', 'preprocClipAtZero', 'smoothGaussianValues', ...
+        'smoothMedianValues', 'nlmFilterStrength', 'nlmSearchWindow', ...
+        'nlmComparisonWindow', 'waveletName', 'waveletLevel', ...
+        'waveletThresholdRule', 'waveletThresholdMethod', ...
+        'bgCorrEnabled', 'bgCorrMode', 'bgCorrScale', 'bgCorrProjection', ...
+        'bgMethod', 'bgParam', 'bgCorrClipAtZero', ...
+        'maximaEnabled', 'maximaMode', 'maximaScale', 'maximaProjection', ...
+        'maximaMethod', 'maximaNeighborhoodSize', 'hMaxValue', 'sigmaValue', ...
+        'peakThresholdValue', 'showMaxima', 'maximaColor', 'displayOnAllPreviews', ...
+        'gaussFitEnabled', 'gaussFitMethod', 'gaussFitVoxelWindowSize', ...
+        'gaussFitBgCorrMethod', 'gaussFitBgCorrWidth', 'gaussFitPolyDegree', ...
+        'gaussFitMaxIterations', 'gaussFitTolerance', 'gaussFitRadialRadius', ...
+        'gaussFitPlotCheck', ...
+        'fitFilterEnabled', 'fitFilterRSquaredEnabled', 'fitFilterRSquaredMin', ...
+        'fitFilterRSquaredMax', 'fitFilterSigmaSumEnabled', 'fitFilterSigmaSumMin', ...
+        'fitFilterSigmaSumMax', 'fitFilterAmplitudeEnabled', 'fitFilterAmplitudeMin', ...
+        'fitFilterAmplitudeMax', 'fitFilterIntensityEnabled', 'fitFilterIntensityMin', ...
+        'fitFilterIntensityMax', ...
+        'previewContents', 'previewModes', 'previewProjections' ...
+    };
+
+    for i = 1:numel(channel_fields)
+        params = coerceFieldToCellRow(params, channel_fields{i});
+    end
+end
+
+function params = coerceFieldToCellRow(params, field_name)
+    if ~isfield(params, field_name)
+        return;
+    end
+
+    raw = params.(field_name);
+    if isempty(raw)
+        params.(field_name) = {};
+        return;
+    end
+
+    if iscell(raw)
+        values = raw;
+    elseif isstring(raw)
+        values = cellstr(raw(:));
+    elseif ischar(raw)
+        values = {raw};
+    elseif isnumeric(raw) || islogical(raw)
+        values = num2cell(raw(:));
+    else
+        values = {raw};
+    end
+
+    params.(field_name) = reshape(values, 1, []);
+end
+
+function params = normalizeDropdownField(params, fieldName, allowedValues, fallbackValue, mapperFcn)
+    if ~isfield(params, fieldName)
+        return;
+    end
+    if nargin < 5
+        mapperFcn = [];
+    end
+
+    normalized = toTextValue(params.(fieldName), fallbackValue);
+    if ~isempty(mapperFcn)
+        normalized = mapperFcn(normalized);
+    end
+
+    if strcmp(fieldName, 'nucInclusionExclusionApplyTo')
+        % Dynamic channel list is validated later against control items.
+        params.(fieldName) = normalized;
+        return;
+    end
+
+    if ~ismember(normalized, allowedValues)
+        normalized = fallbackValue;
+    end
+    params.(fieldName) = normalized;
+end
+
+function params = normalizeDropdownCellField(params, fieldName, allowedValues, fallbackValue, mapperFcn)
+    if ~isfield(params, fieldName)
+        return;
+    end
+    if nargin < 5
+        mapperFcn = [];
+    end
+    values = params.(fieldName);
+    if isempty(values)
+        return;
+    end
+    if isstring(values)
+        values = cellstr(values);
+    elseif ischar(values)
+        values = {values};
+    elseif isnumeric(values) || islogical(values)
+        values = num2cell(values);
+    elseif ~iscell(values)
+        values = {values};
+    end
+
+    for i = 1:numel(values)
+        normalized = toTextValue(values{i}, fallbackValue);
+        if ~isempty(mapperFcn)
+            normalized = mapperFcn(normalized);
+        end
+        if ~ismember(normalized, allowedValues)
+            normalized = fallbackValue;
+        end
+        values{i} = normalized;
+    end
+    params.(fieldName) = values;
+end
+
+function normalized = normalizeModeValue(value)
+    value_key = lower(strtrim(value));
+    switch value_key
+        case {'3d', 'on 3d volume', '3d volume', '3d local threshold'}
+            normalized = '3D';
+        case {'2d', '2d (slice by slice)', '2d (slice-by-slice)', '2d slice-by-slice', 'on 2d plane'}
+            normalized = '2D (Slice-by-slice)';
+        case {'z projection', 'z-projection', 'on z projection', 'on z-projection', 'projection'}
+            normalized = 'On Z-Projection';
+        otherwise
+            normalized = value;
+    end
+end
+
+function normalized = normalizeSegMainMethodValue(value)
+    value_key = lower(strtrim(value));
+    switch value_key
+        case {'auto threshold', 'adaptive thresholding', 'adaptive threshold', 'auto local', 'auto local threshold'}
+            normalized = 'Auto Local Threshold';
+        otherwise
+            normalized = value;
+    end
+end
+
+function normalized = normalizeSegSubMethodValue(value)
+    value_key = lower(strtrim(value));
+    switch value_key
+        case {'std dev multiplier', 'stddev multiplier', 'standard deviation multiplier', 'std multiplier'}
+            normalized = 'Std Multiplier';
+        case {'absolute offset', 'offset'}
+            normalized = 'Absolute Offset';
+        otherwise
+            normalized = value;
+    end
+end
+
+function normalized = normalizeNucleiFilterModeValue(value)
+    value_key = lower(strtrim(value));
+    if ismember(value_key, {'include inside nuclei', 'include', 'inside', 'inside nuclei'})
+        normalized = 'Include Inside Nuclei';
+    elseif ismember(value_key, {'exclude inside nuclei', 'exclude', 'outside', 'outside nuclei'})
+        normalized = 'Exclude Inside Nuclei';
+    else
+        normalized = value;
+    end
+end
+
+function normalized = normalizeApplyTargetValue(value)
+    value_key = lower(strtrim(value));
+    if isempty(value_key) || contains(value_key, 'all')
+        normalized = 'All Channels';
+        return;
+    end
+
+    token = regexp(value_key, 'channel\s*(\d+)', 'tokens', 'once');
+    if ~isempty(token)
+        normalized = sprintf('Channel %d', str2double(token{1}));
+    else
+        normalized = 'All Channels';
+    end
+end
+
+function normalized = normalizeGaussFitMethodValue(value)
+    value_key = lower(strtrim(value));
+    switch value_key
+        case {'1d x,y,z gaussian', '1d xyz gaussian', '1d gaussian'}
+            normalized = '1D (X,Y,Z) Gaussian';
+        case {'2d+1d gaussian', '2d (xy)+1d (z) gaussian', '2d (xy) + 1d (z) gaussian'}
+            normalized = '2D (XY) + 1D (Z) Gaussian';
+        case {'distorted gaussian', 'distorted 3d'}
+            normalized = 'Distorted 3D Gaussian';
+        otherwise
+            normalized = value;
+    end
+end
+
+function textValue = toTextValue(value, fallbackValue)
+    if isstring(value)
+        if isempty(value)
+            textValue = fallbackValue;
+        else
+            textValue = char(value(1));
+        end
+    elseif ischar(value)
+        textValue = value;
+    elseif iscell(value) && ~isempty(value)
+        textValue = toTextValue(value{1}, fallbackValue);
+    else
+        textValue = fallbackValue;
+    end
+    textValue = strtrim(textValue);
+    if isempty(textValue)
+        textValue = fallbackValue;
+    end
+end
+
+function setDropdownValueIfValid(controlHandle, value, fallbackValue)
+    if isempty(controlHandle) || ~isvalid(controlHandle)
+        return;
+    end
+
+    targetValue = toTextValue(value, fallbackValue);
+    itemsRaw = controlHandle.Items;
+    if isstring(itemsRaw)
+        items = cellstr(itemsRaw);
+    elseif ischar(itemsRaw)
+        items = cellstr(itemsRaw);
+    elseif iscell(itemsRaw)
+        items = cell(size(itemsRaw));
+        for i = 1:numel(itemsRaw)
+            items{i} = toTextValue(itemsRaw{i}, '');
+        end
+    else
+        items = {};
+    end
+    if ismember(targetValue, items)
+        controlHandle.Value = targetValue;
+    elseif nargin >= 3 && ismember(fallbackValue, items)
+        controlHandle.Value = fallbackValue;
     end
 end
 
@@ -1209,7 +1473,7 @@ function loadClassifierForChannel(channelIdx, fig)
         handles.classifyApplyButtons(channelIdx).Enable = 'on';
         handles.classifySelectFeaturesButtons(channelIdx).Enable = 'on';
         
-        % Check fitting method compatibility
+        % Check fitting method availability
         currentMethod = handles.gaussFitMethodDrop(channelIdx).Value;
         if ~contains(currentMethod, fittingMethod, 'IgnoreCase', true) && ...
            ~contains(fittingMethod, currentMethod, 'IgnoreCase', true)
@@ -1243,8 +1507,8 @@ function applyClassifierToChannel(channelIdx, fig)
         return;
     end
     
-    channelData = handles.previewCache.channels(channelIdx);
-    if ~isfield(channelData, 'fitResults') || isempty(channelData.fitResults)
+    channelData = handles.previewCache.channels{channelIdx};
+    if isempty(channelData) || ~isstruct(channelData) || ~isfield(channelData, 'fitResults') || isempty(channelData.fitResults)
         uialert(fig, 'No fit results for this channel. Enable fitting first.', 'No Fits');
         return;
     end
@@ -1279,10 +1543,10 @@ function applyClassifierToChannel(channelIdx, fig)
         handles.classifiers{channelIdx}, X, featureNames, featureNames, normParams);
     
     % Store results
-    handles.previewCache.channels(channelIdx).classifications = struct();
-    handles.previewCache.channels(channelIdx).classifications.predictions = predictions;
-    handles.previewCache.channels(channelIdx).classifications.confidence = confidence;
-    handles.previewCache.channels(channelIdx).classifications.validMask = validMask;
+    channelData.classifications = struct();
+    channelData.classifications.predictions = predictions;
+    channelData.classifications.confidence = confidence;
+    channelData.classifications.validMask = validMask;
     
     % Count results
     nReal = sum(predictions == 1 & validMask);
@@ -1301,7 +1565,7 @@ function applyClassifierToChannel(channelIdx, fig)
                     newMask(validIdx(i)) = false;
                 end
             end
-            handles.previewCache.channels(channelIdx).filterMask = newMask;
+            channelData.filterMask = newMask;
             
             nFiltered = sum(oldMask) - sum(newMask);
             msgStr = sprintf('Classification complete:\n- Real: %d\n- Noise: %d (filtered)\n- Invalid: %d', ...
@@ -1315,6 +1579,7 @@ function applyClassifierToChannel(channelIdx, fig)
             nReal, nNoise, nInvalid);
     end
     
+    handles.previewCache.channels{channelIdx} = channelData;
     guidata(fig, handles);
     
     % Refresh preview
@@ -1332,9 +1597,11 @@ function selectClassifierFeatures(channelIdx, fig)
     % Determine if 3D
     has3D = false;
     if isfield(handles, 'previewCache') && isfield(handles.previewCache, 'channels') && ...
-       channelIdx <= numel(handles.previewCache.channels) && ...
-       isfield(handles.previewCache.channels(channelIdx), 'processed')
-        has3D = size(handles.previewCache.channels(channelIdx).processed, 3) > 1;
+       channelIdx <= numel(handles.previewCache.channels)
+        chCache = handles.previewCache.channels{channelIdx};
+        if ~isempty(chCache) && isstruct(chCache) && isfield(chCache, 'processed')
+            has3D = size(chCache.processed, 3) > 1;
+        end
     end
     
     previousSelection = handles.classifierFeatures{channelIdx};
