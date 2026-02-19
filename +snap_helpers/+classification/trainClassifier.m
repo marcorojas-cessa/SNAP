@@ -10,7 +10,7 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
 %
 % KEY FEATURES:
 %   - Z-score normalization (mean=0, std=1) for all features
-%   - Automatic class balancing (handles imbalanced datasets)
+%   - Configurable class-bin weighting for imbalanced datasets
 %   - Configurable kernel and hyperparameters
 %   - Cross-validation support
 %   - Comprehensive training statistics
@@ -36,6 +36,7 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
 %     NORMALIZATION:
 %       .standardize     - true (default): z-score normalize features
 %                          ALWAYS RECOMMENDED for SVM
+%       .classWeightMode - 'balanced' (default) or 'none'
 %
 %     VALIDATION:
 %       .crossValidate   - true (default) or false
@@ -70,6 +71,7 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
     defaultOptions.boxConstraint = 1;
     % Normalization - ALWAYS ON BY DEFAULT
     defaultOptions.standardize = true;
+    defaultOptions.classWeightMode = 'balanced';
     % Validation
     defaultOptions.crossValidate = true;
     defaultOptions.kFold = 5;
@@ -84,6 +86,12 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
         if ~isfield(options, optFields{i})
             options.(optFields{i}) = defaultOptions.(optFields{i});
         end
+    end
+
+    % Normalize class-weight mode
+    options.classWeightMode = lower(strtrim(char(string(options.classWeightMode))));
+    if ~ismember(options.classWeightMode, {'balanced', 'none'})
+        options.classWeightMode = 'balanced';
     end
     
     % Initialize outputs
@@ -177,9 +185,18 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
         return;
     end
     
-    % Compute class weights (inverse frequency for balanced training)
-    classWeights = trainStats.nSamples ./ (nClasses * classCounts);
+    % Compute class weights
+    switch options.classWeightMode
+        case 'balanced'
+            % Inverse-frequency weighting to balance class bins.
+            classWeights = trainStats.nSamples ./ (nClasses * classCounts);
+        case 'none'
+            classWeights = ones(nClasses, 1);
+        otherwise
+            error('Unsupported classWeightMode: %s', options.classWeightMode);
+    end
     trainStats.classWeights = classWeights;
+    trainStats.classWeightMode = options.classWeightMode;
     
     % Create sample weight vector
     sampleWeights = ones(trainStats.nSamples, 1);
@@ -202,6 +219,7 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
             fprintf('  Kernel scale: %s\n', options.kernelScale);
         end
         fprintf('  Box constraint (C): %.4f\n', options.boxConstraint);
+        fprintf('  Class weighting: %s\n', options.classWeightMode);
         fprintf('  Class weights: [%.2f, %.2f]\n', classWeights(1), classWeights(end));
     end
     

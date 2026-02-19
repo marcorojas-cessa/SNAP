@@ -82,12 +82,25 @@ function [selectedFeatures, customExpressions, cancelled] = featureSelectionUI(f
     leftGrid.Padding = [10 10 10 10];
     leftGrid.RowSpacing = 10;
     
-    % Header info
-    uilabel(leftGrid, 'Text', sprintf('Method: %s | 3D: %s', fittingMethod, string(has3D)), ...
-        'FontSize', 10, 'FontColor', [0.4 0.4 0.4]);
+    % Header info + section navigation (SNAP-style up/down paging)
+    headerGrid = uigridlayout(leftGrid, [1 4]);
+    headerGrid.ColumnWidth = {'fit', '1x', 'fit', 'fit'};
+    headerGrid.Padding = [0 0 0 0];
+    headerGrid.ColumnSpacing = 6;
+    uilabel(headerGrid, 'Text', 'Feature Sections:', 'FontWeight', 'bold');
+    sectionStateField = uieditfield(headerGrid, 'text', ...
+        'Editable', 'off', ...
+        'Value', 'Initializing...', ...
+        'FontColor', [0.35 0.35 0.35], ...
+        'Tooltip', sprintf('Method: %s | 3D: %s', fittingMethod, string(has3D)));
+    upSectionBtn = uibutton(headerGrid, 'Text', '↑', 'FontSize', 16);
+    downSectionBtn = uibutton(headerGrid, 'Text', '↓', 'FontSize', 16);
+    sectionStateField.Layout.Column = 2;
+    upSectionBtn.Layout.Column = 3;
+    downSectionBtn.Layout.Column = 4;
     
-    % Scrollable feature panel
-    scrollPanel = uipanel(leftGrid, 'Scrollable', 'on', 'BorderType', 'line');
+    % Feature-section container (paged via up/down arrows)
+    scrollPanel = uipanel(leftGrid, 'BorderType', 'line');
     
     % Group features by category
     featuresByCategory = struct();
@@ -113,32 +126,92 @@ function [selectedFeatures, customExpressions, cancelled] = featureSelectionUI(f
         end
     end
     
-    scrollGrid = uigridlayout(scrollPanel, [numel(nonEmptyCategories) 1]);
-    scrollGrid.RowHeight = repmat({'fit'}, 1, numel(nonEmptyCategories));
-    scrollGrid.Padding = [5 5 5 5];
+    % Split long categories into chunks so all features are reachable
+    % through up/down states even when one category has many entries.
+    % Keep section panels compact so multiple sections are visible at once.
+    maxRowsPerSection = 5;
+    sectionSpecs = struct('title', {}, 'color', {}, 'features', {}, 'rowHeight', {});
+
+    featureRowHeight = 24;
+    featureRowSpacing = 2;
+    categoryTitleHeight = 24;
+    categoryVerticalPadding = 10; % top + bottom combined
+
+    for c = 1:numel(nonEmptyCategories)
+        catName = nonEmptyCategories{c};
+        catFeatures = featuresByCategory.(catName);
+        if isempty(catFeatures)
+            continue;
+        end
+
+        nChunks = max(1, ceil(numel(catFeatures) / maxRowsPerSection));
+        for chunkIdx = 1:nChunks
+            firstIdx = (chunkIdx - 1) * maxRowsPerSection + 1;
+            lastIdx = min(numel(catFeatures), chunkIdx * maxRowsPerSection);
+            chunkFeatures = catFeatures(firstIdx:lastIdx);
+
+            if nChunks == 1
+                sectionTitle = categoryLabels.(catName);
+            else
+                sectionTitle = sprintf('%s (%d/%d)', categoryLabels.(catName), chunkIdx, nChunks);
+            end
+
+            nRows = numel(chunkFeatures);
+            panelHeight = categoryTitleHeight + categoryVerticalPadding + ...
+                max(0, nRows * featureRowHeight + (nRows - 1) * featureRowSpacing);
+
+            sectionSpecs(end+1) = struct( ...
+                'title', sectionTitle, ...
+                'color', categoryColors.(catName), ...
+                'features', {chunkFeatures}, ...
+                'rowHeight', panelHeight);
+        end
+    end
+
+    nSectionPanels = max(1, numel(sectionSpecs));
+    scrollGrid = uigridlayout(scrollPanel, [nSectionPanels 1]);
+    scrollGrid.Padding = [6 6 6 6];
     scrollGrid.RowSpacing = 8;
-    
+    rowHeights = cell(1, nSectionPanels);
+    if isempty(sectionSpecs)
+        rowHeights{1} = 40;
+    else
+        for s = 1:numel(sectionSpecs)
+            rowHeights{s} = sectionSpecs(s).rowHeight;
+        end
+    end
+    scrollGrid.RowHeight = rowHeights;
+
+    % Navigation state for section panels.
+    % A stage is the index of the first visible section. From that start
+    % index onward, all remaining sections are enabled and the panel clips
+    % to visible height, mirroring SNAP's up/down "scroll by stage" behavior.
+    currentSectionState = 0; % 0-based
+    maxSectionState = max(0, numel(sectionSpecs) - 1);
+
     % Store checkboxes for later access
     checkboxes = struct();
+    sectionPanels = gobjects(1, numel(sectionSpecs));
     
-    % Create category panels
-    for c = 1:numel(nonEmptyCategories)
-        cat = nonEmptyCategories{c};
-        catFeatures = featuresByCategory.(cat);
+    % Create section panels
+    for s = 1:numel(sectionSpecs)
+        spec = sectionSpecs(s);
+        panelFeatures = spec.features;
         
-        if isempty(catFeatures), continue; end
+        sectionPanel = uipanel(scrollGrid, 'Title', spec.title, ...
+            'FontWeight', 'bold', 'ForegroundColor', spec.color);
+        sectionPanel.Layout.Row = s;
+        sectionPanel.Layout.Column = 1;
+        sectionPanels(s) = sectionPanel;
         
-        catColor = categoryColors.(cat);
-        catPanel = uipanel(scrollGrid, 'Title', categoryLabels.(cat), ...
-            'FontWeight', 'bold', 'ForegroundColor', catColor);
+        sectionGrid = uigridlayout(sectionPanel, [numel(panelFeatures) 2]);
+        sectionGrid.ColumnWidth = {180, '1x'};
+        sectionGrid.RowHeight = repmat({featureRowHeight}, 1, numel(panelFeatures));
+        sectionGrid.RowSpacing = featureRowSpacing;
+        sectionGrid.Padding = [5 5 5 5];
         
-        catGrid = uigridlayout(catPanel, [numel(catFeatures) 2]);
-        catGrid.ColumnWidth = {180, '1x'};
-        catGrid.RowHeight = repmat({22}, 1, numel(catFeatures));
-        catGrid.Padding = [5 5 5 5];
-        
-        for i = 1:numel(catFeatures)
-            fname = catFeatures{i};
+        for i = 1:numel(panelFeatures)
+            fname = panelFeatures{i};
             
             desc = '';
             if isfield(featureInfo, fname) && isfield(featureInfo.(fname), 'description')
@@ -149,15 +222,25 @@ function [selectedFeatures, customExpressions, cancelled] = featureSelectionUI(f
             if ~isempty(previousSelection)
                 isSelected = ismember(fname, previousSelection);
             else
-                isSelected = ~strcmp(cat, 'position');
+                isPositionFeature = false;
+                if isfield(featureInfo, fname) && isfield(featureInfo.(fname), 'category')
+                    isPositionFeature = strcmp(featureInfo.(fname).category, 'position');
+                end
+                isSelected = ~isPositionFeature;
             end
             
-            cb = uicheckbox(catGrid, 'Text', fname, 'Value', isSelected, 'FontName', 'Consolas');
+            cb = uicheckbox(sectionGrid, 'Text', fname, 'Value', isSelected, 'FontName', 'Consolas');
             checkboxes.(matlab.lang.makeValidName(fname)) = cb;
             
-            uilabel(catGrid, 'Text', desc, 'FontSize', 9, 'FontColor', [0.5 0.5 0.5]);
+            uilabel(sectionGrid, 'Text', desc, 'FontSize', 9, 'FontColor', [0.5 0.5 0.5]);
         end
     end
+
+    % Hook section navigation callbacks and initialize view state
+    upSectionBtn.ButtonPushedFcn = @(~,~) navigateFeatureSections('up');
+    downSectionBtn.ButtonPushedFcn = @(~,~) navigateFeatureSections('down');
+    fig.SizeChangedFcn = @(~,~) recomputeSectionWindowSize();
+    recomputeSectionWindowSize();
     
     % Statistics panel
     statsGrid = uigridlayout(leftGrid, [1 2]);
@@ -298,6 +381,77 @@ function [selectedFeatures, customExpressions, cancelled] = featureSelectionUI(f
             statsLabel.FontColor = [0.8 0.6 0.2];
         else
             statsLabel.FontColor = [0.2 0.6 0.2];
+        end
+    end
+
+    function recomputeSectionWindowSize()
+        nSections = numel(sectionSpecs);
+        if nSections == 0
+            maxSectionState = 0;
+            currentSectionState = 0;
+            refreshFeatureSectionView();
+            return;
+        end
+
+        maxSectionState = max(0, nSections - 1);
+        currentSectionState = min(currentSectionState, maxSectionState);
+        refreshFeatureSectionView();
+    end
+
+    function navigateFeatureSections(direction)
+        newState = currentSectionState;
+        if strcmp(direction, 'down')
+            newState = min(maxSectionState, currentSectionState + 1);
+        elseif strcmp(direction, 'up')
+            newState = max(0, currentSectionState - 1);
+        end
+        if newState == currentSectionState
+            return;
+        end
+        currentSectionState = newState;
+        refreshFeatureSectionView();
+    end
+
+    function refreshFeatureSectionView()
+        nSections = numel(sectionSpecs);
+        if nSections == 0
+            sectionStateField.Value = 'No feature sections';
+            upSectionBtn.Enable = 'off';
+            downSectionBtn.Enable = 'off';
+            return;
+        end
+
+        startIdx = currentSectionState + 1;
+        endIdx = nSections;
+
+        newRowHeights = rowHeights;
+        for jj = 1:nSections
+            if jj < startIdx || jj > endIdx
+                newRowHeights{jj} = 0;
+                if isgraphics(sectionPanels(jj))
+                    sectionPanels(jj).Visible = 'off';
+                end
+            else
+                if isgraphics(sectionPanels(jj))
+                    sectionPanels(jj).Visible = 'on';
+                end
+            end
+        end
+        scrollGrid.RowHeight = newRowHeights;
+
+        totalStates = maxSectionState + 1;
+        sectionStateField.Value = sprintf('Stage %d/%d (Start Section %d)', ...
+            currentSectionState + 1, totalStates, startIdx);
+
+        if currentSectionState > 0
+            upSectionBtn.Enable = 'on';
+        else
+            upSectionBtn.Enable = 'off';
+        end
+        if currentSectionState < maxSectionState
+            downSectionBtn.Enable = 'on';
+        else
+            downSectionBtn.Enable = 'off';
         end
     end
     

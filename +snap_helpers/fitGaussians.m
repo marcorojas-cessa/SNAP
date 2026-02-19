@@ -18,6 +18,9 @@ function [fitResults, wasAborted] = fitGaussians(imageData, maximaCoords, fitPar
 %   fitParams    - Structure with fitting parameters
 %   is3D         - Boolean indicating 3D data
 %   varargin{1}  - Optional function handle returning true when abort is requested
+%   varargin{2}  - Optional abort poll interval (number of maxima)
+%   varargin{3}  - Optional progress callback function handle
+%   varargin{4}  - Optional progress update interval (number of maxima)
 %
 % Outputs:
 %   fitResults   - Structure array with fit parameters and coordinate info
@@ -26,11 +29,19 @@ function [fitResults, wasAborted] = fitGaussians(imageData, maximaCoords, fitPar
     wasAborted = false;
     abortCheckFcn = [];
     abortPollInterval = 5;
+    progressCb = [];
+    progressInterval = 250;
     if ~isempty(varargin) && isa(varargin{1}, 'function_handle')
         abortCheckFcn = varargin{1};
     end
     if numel(varargin) >= 2 && isnumeric(varargin{2}) && isscalar(varargin{2}) && isfinite(varargin{2})
         abortPollInterval = max(1, round(varargin{2}));
+    end
+    if numel(varargin) >= 3 && isa(varargin{3}, 'function_handle')
+        progressCb = varargin{3};
+    end
+    if numel(varargin) >= 4 && isnumeric(varargin{4}) && isscalar(varargin{4}) && isfinite(varargin{4})
+        progressInterval = max(1, round(varargin{4}));
     end
 
     if ~isfield(fitParams, 'gaussFitMethod') || isempty(fitParams.gaussFitMethod)
@@ -54,6 +65,9 @@ function [fitResults, wasAborted] = fitGaussians(imageData, maximaCoords, fitPar
     if ~isfield(fitParams, 'gaussFitMaxIterations') || isempty(fitParams.gaussFitMaxIterations)
         fitParams.gaussFitMaxIterations = 200;
     end
+    if ~isfield(fitParams, 'gaussFitMaxFunctionEvals') || isempty(fitParams.gaussFitMaxFunctionEvals)
+        fitParams.gaussFitMaxFunctionEvals = max(2000, 20 * fitParams.gaussFitMaxIterations);
+    end
     if ~isfield(fitParams, 'gaussFitTolerance') || isempty(fitParams.gaussFitTolerance)
         fitParams.gaussFitTolerance = 1e-6;
     end
@@ -64,6 +78,7 @@ function [fitResults, wasAborted] = fitGaussians(imageData, maximaCoords, fitPar
     fitParams.gaussFitBgCorrWidth = sanitizeInteger(fitParams.gaussFitBgCorrWidth, 0, 10, 1);
     fitParams.gaussFitPolyDegree = sanitizeInteger(fitParams.gaussFitPolyDegree, 1, 3, 2);
     fitParams.gaussFitMaxIterations = sanitizeInteger(fitParams.gaussFitMaxIterations, 10, 1000, 200);
+    fitParams.gaussFitMaxFunctionEvals = sanitizeInteger(fitParams.gaussFitMaxFunctionEvals, 100, 200000, max(2000, 20 * fitParams.gaussFitMaxIterations));
     fitParams.gaussFitTolerance = sanitizePositive(fitParams.gaussFitTolerance, 1e-12, 1, 1e-6);
     fitParams.gaussFitRadialRadius = sanitizePositive(fitParams.gaussFitRadialRadius, 0.5, 20, 3);
 
@@ -90,6 +105,9 @@ function [fitResults, wasAborted] = fitGaussians(imageData, maximaCoords, fitPar
                         'localMaximaInWindow', cell(1, numMaxima), 'globalFitCenter', cell(1, numMaxima));
 
 imgSize = size(imageData);
+fitStartTic = tic;
+lastProgressTic = tic;
+emitFitProgress(progressCb, 'Gaussian fitting progress: 0/%d maxima completed.', numMaxima);
 
 for i = 1:numMaxima
     if ~isempty(abortCheckFcn) && (i == 1 || mod(i - 1, abortPollInterval) == 0)
@@ -100,6 +118,19 @@ for i = 1:numMaxima
             fitResults = fitResults(1:i-1);
             break;
         end
+    end
+    if ~isempty(progressCb) && (i == 1 || mod(i - 1, progressInterval) == 0 || toc(lastProgressTic) >= 30)
+        elapsedSec = toc(fitStartTic);
+        done = i - 1;
+        if done > 0
+            etaSec = elapsedSec * (numMaxima - done) / done;
+            emitFitProgress(progressCb, 'Gaussian fitting progress: %d/%d maxima completed (elapsed %.1fs, ETA %.1fs).', ...
+                done, numMaxima, elapsedSec, etaSec);
+        else
+            emitFitProgress(progressCb, 'Gaussian fitting progress: %d/%d maxima completed (elapsed %.1fs).', ...
+                done, numMaxima, elapsedSec);
+        end
+        lastProgressTic = tic;
     end
 
     % Initialize all results to NaN to handle cases where a field is not calculated
@@ -461,6 +492,11 @@ for i = 1:numMaxima
     
 end  % End of maxima loop
 
+if ~wasAborted
+    emitFitProgress(progressCb, 'Gaussian fitting progress: %d/%d maxima completed (elapsed %.1fs).', ...
+        numMaxima, numMaxima, toc(fitStartTic));
+end
+
 % --- 5. Optional Plotting ---
 if ~wasAborted && fitParams.gaussFitPlotCheck
     % Placeholder for plotting logic
@@ -478,6 +514,24 @@ function tf = localAbortRequested(abortCheckFcn)
         tf = logical(abortCheckFcn());
     catch
         tf = false;
+    end
+end
+
+function options = createLsqOptions(fitParams)
+    options = optimoptions('lsqnonlin', 'Display', 'off', ...
+                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
+                           'MaxFunctionEvaluations', fitParams.gaussFitMaxFunctionEvals, ...
+                           'FunctionTolerance', fitParams.gaussFitTolerance);
+end
+
+function emitFitProgress(progressCb, msgFmt, varargin)
+    if isempty(progressCb) || ~isa(progressCb, 'function_handle')
+        return;
+    end
+    try
+        progressCb(sprintf(msgFmt, varargin{:}));
+    catch
+        % Progress reporting must never stop fitting.
     end
 end
 
@@ -772,9 +826,7 @@ function [fit_params, r_squared] = fit_3D(data, fitParams, window_info)
     ub = [max_amplitude, size(data,1), size(data,2), size(data,3), size(data,1)/2, size(data,2)/2, size(data,3)/2];  % Max sigma = half window size
     
     % Solver options
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
                            
     % Run solver
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);
@@ -824,9 +876,7 @@ function [fit_params, r_squared] = fit_2D(data, fitParams, window_info)
     ub = [max_amplitude, size(data, 2), size(data, 1), size(data, 2)/2, size(data, 1)/2, pi];  % Max sigma = half window size
     
     % Solver options
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
                            
     % Run solver
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);
@@ -873,9 +923,7 @@ function [fit_params, r_squared] = fit_1D(data, coords, fitParams, actual_center
     ub = [max_amplitude, max(coords), length(coords)/2];  % Max sigma = half window size
     
     % Solver options
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
     
     % Run solver
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);
@@ -923,9 +971,7 @@ function [fit_params, r_squared] = fit_3D_distorted(data, fitParams, window_info
     lb = [0.001, 1, 1, 1, 0.1, 0.1, 0.1, -1, -1, -1];
     ub = [max_amplitude, size(data,1), size(data,2), size(data,3), size(data,1)/2, size(data,2)/2, size(data,3)/2, 1, 1, 1];
     
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
                            
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);
     
@@ -997,9 +1043,7 @@ function [fit_params, r_squared] = fit_3D_skewed(data, fitParams, window_info)
     lb = [0.001, 1, 1, 1, 0.1, 0.1, 0.1, -1, -1, -1, -inf, -inf, -inf];
     ub = [max_amplitude, size(data,1), size(data,2), size(data,3), size(data,1)/2, size(data,2)/2, size(data,3)/2, 1, 1, 1, inf, inf, inf];
     
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
                            
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);
     
@@ -1058,9 +1102,7 @@ function [fit_params, r_squared] = fit_2D_skewed(data, fitParams, window_info)
     lb = [0.001, 1, 1, 0.1, 0.1, -1, -inf, -inf];
     ub = [max_amplitude, size(data,1), size(data,2), size(data,1)/2, size(data,2)/2, 1, inf, inf];
     
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
                            
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);
     
@@ -1119,9 +1161,7 @@ function [fit_params, r_squared] = fit_2D_distorted(data, fitParams, window_info
     ub = [max_amplitude, size(data,1), size(data,2), size(data,1)/2, size(data,2)/2, pi];
     
     % Solver options
-    options = optimoptions('lsqnonlin', 'Display', 'off', ...
-                           'MaxIterations', fitParams.gaussFitMaxIterations, ...
-                           'FunctionTolerance', fitParams.gaussFitTolerance);
+    options = createLsqOptions(fitParams);
                            
     % Run solver
     fit_params = lsqnonlin(@(p) objective(p, coords, data(:)), p0, lb, ub, options);

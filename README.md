@@ -408,9 +408,34 @@ SNAP_batch('data/', 'params.mat', ...
 
 ---
 
-### Train from Existing Labels (Command Line)
+### Train from Existing Labels (`SNAP_train`)
 
-If you already have labeled spots for many images, you can train a classifier without the manual UI:
+`SNAP_train` now supports both:
+- **GUI mode** (`SNAP_train`) for multi-channel, per-channel SVM training
+- **Programmatic mode** (`SNAP_train(exportFiles, labelFiles, outputClassifierPath, ...)`) for scripted training
+
+#### GUI Mode (Recommended for multi-channel workflows)
+
+```matlab
+SNAP_train
+```
+
+The training UI provides:
+- Parameter file loading (`.mat`) to infer the active channel count and per-channel fitting context
+- Exactly one potential SVM per detected channel (enable/disable channels with the per-channel train checkbox)
+- Per-channel training and validation directory assignment (set independently for each channel; validation is required when sweep mode is enabled)
+- Shared output directory with per-channel classifier output file names
+- Adjustable **Match Distance** for label-to-candidate assignment
+- Two training strategies:
+  - Manual hyperparameters (kernel, box constraint, kernel scale, polynomial order, standardization, CV folds)
+  - Validation sweep optimization (kernel/grid search with held-out validation files)
+- Optional sweep performance reporting (toggle-able log + plot output for hyperparameter comparison)
+
+Training discovers export/label pairs recursively and trains one classifier per selected channel.
+
+#### Programmatic Mode
+
+If you already have labeled spots for many images, you can train directly from file lists:
 
 ```matlab
 exportFiles = {'image1_ch1_signals.mat', 'image2_ch1_signals.mat'};
@@ -421,12 +446,6 @@ SNAP_train(exportFiles, labelFiles, 'channel1_classifier.mat', ...
     'ValidationExportFiles', valExportFiles, ...
     'ValidationLabelFiles', valLabelFiles, ...
     'HyperparameterSweep', true);
-```
-
-Or run interactively and provide training/validation directories + output when prompted:
-
-```matlab
-SNAP_train
 ```
 
 Supported label files:
