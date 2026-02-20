@@ -538,165 +538,33 @@ function channelResults = processChannelBatch(rawChannel, params, channelIdx, nu
     channelResults = struct();
     channelResults.channelIndex = channelIdx;
     
-    % Set raw channel data
-    handles.rawChannel = {rawChannel};
-    
     if ~isempty(progressHandle)
-        appendLog(progressHandle, sprintf('      → Channel %d: Preprocessing & background correction...', channelIdx));
+        appendLog(progressHandle, sprintf('      → Channel %d: Running shared signal pipeline...', channelIdx));
         drawnow;
     end
-    
-    % Process image (deconv, preproc, bg correction)
-    procStart = tic;
-    processedChannel = snap_helpers.processImage(handles, 1);
-    procTime = toc(procStart);
+
+    pipelineProgressCb = [];
+    if ~isempty(progressHandle)
+        pipelineProgressCb = @(msg) logPipelineProgress(progressHandle, channelIdx, msg);
+    end
+
+    pipelineContext = struct();
+    pipelineContext.mode = 'batch';
+    pipelineContext.channelIdx = channelIdx;
+    pipelineContext.params = params;
+    pipelineContext.handles = handles;
+    pipelineContext.nucleiMask = nucleiMask;
+    pipelineContext.enableClassification = true;
+    pipelineContext.enableNucleiFiltering = true;
+    pipelineContext.nucleiFilterMode = params.nucInclusionExclusionMode;
+    pipelineContext.nucleiFilterApplyTo = params.nucInclusionExclusionApplyTo;
+    pipelineContext.progressCallback = pipelineProgressCb;
+
+    pipelineResult = snap_modules.signal.runPipeline(rawChannel, pipelineContext);
+    processedChannel = pipelineResult.processedImage;
+    maximaCoords = pipelineResult.maximaCoords;
+    fitResults = pipelineResult.fitResults;
     channelResults.processedImage = processedChannel;
-    
-    if ~isempty(progressHandle)
-        appendLog(progressHandle, sprintf('        ✓ Preprocessing complete (%.2fs)', procTime));
-        drawnow;
-    end
-    
-    % Detect local maxima if enabled - USE SAME FUNCTION AS SNAP GUI
-    maximaCoords = [];
-    if params.maximaEnabled{channelIdx}
-        if ~isempty(progressHandle)
-            appendLog(progressHandle, sprintf('      → Channel %d: Detecting local maxima...', channelIdx));
-            drawnow;
-        end
-        
-        maxStart = tic;
-        % Use shared maxima detection function (same as SNAP GUI)
-        % Note: Use channelIdx (not 1) to access correct parameters from handles
-        maximaCoords = snap_helpers.detectMaxima(processedChannel, handles, channelIdx);
-        maxTime = toc(maxStart);
-        
-        if ~isempty(progressHandle)
-            appendLog(progressHandle, sprintf('        ✓ Found %d spots (%.2fs)', size(maximaCoords,1), maxTime));
-            drawnow;
-        end
-    end
-    
-    % Apply Gaussian fitting if enabled
-    fitResults = [];
-    if params.gaussFitEnabled{channelIdx} && ~isempty(maximaCoords)
-        if ~isempty(progressHandle)
-            appendLog(progressHandle, sprintf('      → Channel %d: Fitting Gaussians to %d spots...', channelIdx, size(maximaCoords,1)));
-            drawnow;
-        end
-        
-        fitParams = extractFitParams(params, channelIdx);
-        is3D = size(processedChannel, 3) > 1;
-        
-        % PERFORMANCE: Disable any verbose output
-        fitParams.gaussFitPlotCheck = false;
-        fitParams.verbose = false;
-        
-        fitStart = tic;
-        fitResults = snap_helpers.fitGaussians(rawChannel, maximaCoords, fitParams, is3D);
-        fitTime = toc(fitStart);
-        
-        if ~isempty(progressHandle)
-            appendLog(progressHandle, sprintf('        ✓ Gaussian fitting complete (%.2fs)', fitTime));
-            drawnow;
-        end
-        
-        % Apply fit filtering if enabled - USE SAME FUNCTION AS SNAP GUI
-        if params.fitFilterEnabled{channelIdx}
-            % Use shared fit filtering function (same as SNAP GUI)
-            % This handles radial symmetry properly and matches GUI behavior exactly
-            [fitResults, filterMask] = snap_helpers.applyFitFiltering(fitResults, channelIdx, handles);
-            maximaCoords = maximaCoords(filterMask, :);
-            
-            % Verify synchronization
-            if length(fitResults) ~= size(maximaCoords, 1)
-                warning('Channel %d: Fit filtering sync issue (%d fits vs %d coords)', ...
-                    channelIdx, length(fitResults), size(maximaCoords, 1));
-            end
-        end
-        
-        % Apply SVM classification filtering if enabled
-        if isfield(params, 'classifyEnabled') && length(params.classifyEnabled) >= channelIdx && ...
-           params.classifyEnabled{channelIdx} && ~isempty(fitResults)
-            
-            % Check if classifier is loaded
-            if isfield(params, 'classifiers') && length(params.classifiers) >= channelIdx && ...
-               ~isempty(params.classifiers{channelIdx})
-                
-                classifier = params.classifiers{channelIdx};
-                features = params.classifierFeatures{channelIdx};
-                featureInfo = params.classifierFeatureInfo{channelIdx};
-                
-                % Get custom expressions
-                customExpr = struct('name', {}, 'expression', {});
-                if isfield(params, 'classifierCustomExpressions') && ...
-                   numel(params.classifierCustomExpressions) >= channelIdx && ...
-                   ~isempty(params.classifierCustomExpressions{channelIdx})
-                    customExpr = params.classifierCustomExpressions{channelIdx};
-                end
-                
-                % Get normalization parameters
-                normParams = struct('mu', [], 'sigma', [], 'standardized', false);
-                if isfield(params, 'classifierNormParams') && ...
-                   numel(params.classifierNormParams) >= channelIdx && ...
-                   ~isempty(params.classifierNormParams{channelIdx})
-                    normParams = params.classifierNormParams{channelIdx};
-                end
-                
-                % Build feature matrix with custom expressions
-                [X, featureNames, validMask] = snap_helpers.classification.buildFeatureMatrix(...
-                    fitResults, features, featureInfo, customExpr);
-                
-                % Apply classifier with normalization
-                [predictions, ~, ~] = snap_helpers.classification.applyClassifier(...
-                    classifier, X, featureNames, featureNames, normParams);
-                
-                % Filter out noise predictions if auto-filter is enabled
-                if isfield(params, 'classifyFilterNoise') && length(params.classifyFilterNoise) >= channelIdx && ...
-                   params.classifyFilterNoise{channelIdx}
-                    
-                    % Keep spots that are predicted Real OR have invalid features
-                    keepMask = (predictions == 1) | ~validMask;
-                    preClassifyCount = numel(fitResults);
-                    
-                    fitResults = fitResults(keepMask);
-                    maximaCoords = maximaCoords(keepMask, :);
-                    
-                    if ~isempty(progressHandle)
-                        nFiltered = preClassifyCount - numel(fitResults);
-                        appendLog(progressHandle, sprintf('        → SVM: %d/%d classified as Real (%d filtered as Noise)', ...
-                            numel(fitResults), preClassifyCount, nFiltered));
-                    end
-                end
-            end
-        end
-    end
-    
-    % Apply nuclei inclusion/exclusion filtering if enabled - USE SAME FUNCTION AS SNAP GUI
-    if params.nucInclusionExclusionEnabled && ~isempty(nucleiMask) && ~isempty(maximaCoords)
-        % Check if this channel should be filtered based on "Apply to Channels" setting
-        applyTo = params.nucInclusionExclusionApplyTo;
-        shouldFilter = strcmp(applyTo, 'All Channels') || ...
-                       strcmp(applyTo, sprintf('Channel %d', channelIdx));
-        
-        if shouldFilter
-            mode = params.nucInclusionExclusionMode;
-            preFilterCount = size(maximaCoords, 1);
-            
-            % Use shared nuclei filtering function (returns mask to maintain synchronization)
-            [maximaCoords, keepMask] = snap_helpers.filterMaximaByNuclei(maximaCoords, nucleiMask, mode);
-            
-            % CRITICAL: Apply the same mask to fitResults to maintain synchronization
-            if ~isempty(fitResults) && length(fitResults) == preFilterCount
-                fitResults = fitResults(keepMask);
-            end
-            
-            if ~isempty(progressHandle) && size(maximaCoords, 1) < preFilterCount
-                appendLog(progressHandle, sprintf('        → Nuclei filter: %d/%d maxima kept (%s mode)', ...
-                    size(maximaCoords, 1), preFilterCount, mode));
-            end
-        end
-    end
 
     % Ensure maximaCoords is always a double array (even if empty) for consistency
     if isempty(maximaCoords)
@@ -2608,6 +2476,14 @@ function appendLog(progressHandle, message)
     end
 end
 
+function logPipelineProgress(progressHandle, channelIdx, message)
+    if isempty(progressHandle)
+        return;
+    end
+    appendLog(progressHandle, sprintf('        [Ch%d] %s', channelIdx, message));
+    drawnow limitrate;
+end
+
 function emptyResult = createEmptyResult(setName, numChannels)
     % Create empty result structure with ALL fields for consistency
     % This ensures error/skipped results have the same structure as successful ones
@@ -2629,4 +2505,3 @@ function emptyResult = createEmptyResult(setName, numChannels)
     emptyResult.status = '';  % Will be set by caller
     emptyResult.exportedTypes = struct('nucleiData', false, 'channelData', false, 'clusteredData', false, 'visualizations', false);
 end
-

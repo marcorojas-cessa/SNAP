@@ -303,198 +303,64 @@ end
 
 function loadImageLibrary(fig, filePath)
     handles = guidata(fig);
-    
-    % Use MATLAB's Bio-Formats reader
-    try
-        % Update status
-        handles.libraryInfoLabel.Text = 'Loading image library...';
-        handles.libraryInfoLabel.FontColor = [0 0 0.8];
-        guidata(fig, handles);
-        drawnow;
-        
-        % Try using bfopen (from MATLAB Bio-Formats toolbox)
-        fprintf('Loading image library: %s\n', filePath);
-        data = bfopen(filePath);
-        numSeries = size(data, 1);
-        fprintf('Found %d series in library\n', numSeries);
-        
-        % Extract metadata from bfopen format
-        imageData = cell(numSeries, 1);
-        tableData = cell(numSeries, 4);
-        
-        for i = 1:numSeries
-            % Update progress
-            fprintf('Reading series %d/%d...', i, numSeries);
-            
-            % Update GUI if still valid
-            if isvalid(fig)
-                handles = guidata(fig);
-                handles.libraryInfoLabel.Text = sprintf('Reading series %d/%d...', i, numSeries);
-                guidata(fig, handles);
-                drawnow;
-            end
-            
-            seriesData = data{i, 1}; % Image planes
-            seriesMetadata = data{i, 4}; % OME metadata
-            seriesLabel = data{i, 2}; % Series name
-            
-            % Get metadata
-            metadata = struct();
-            metadata.seriesIndex = i;
-            metadata.libraryPath = filePath; % Store path for later reopening
-            
-            % Convert series label to proper MATLAB char
-            if ischar(seriesLabel)
-                rawName = seriesLabel;
-            elseif isstring(seriesLabel)
-                rawName = char(seriesLabel);
-            else
-                rawName = char(string(seriesLabel));
-            end
-            
-            % Extract name from patterns like "name=..." or "Name=..."
-            metadata.name = extractNameFromString(rawName);
-            
-            % Ensure name is valid
-            if isempty(metadata.name) || strcmp(strtrim(metadata.name), '')
-                metadata.name = sprintf('Image_%03d', i);
-            end
-            
-            % Parse dimensions from seriesData
-            % Each row in seriesData is: {image, label}
-            % We need to figure out dimensions from the structure
-            numPlanes = size(seriesData, 1);
-            
-            if numPlanes > 0
-                firstImage = seriesData{1, 1};
-                metadata.sizeX = size(firstImage, 2);
-                metadata.sizeY = size(firstImage, 1);
-            else
-                metadata.sizeX = 0;
-                metadata.sizeY = 0;
-            end
-            
-            % Try to extract Z, C, T from metadata
-            try
-                metadata.sizeZ = double(seriesMetadata.getPixelsSizeZ(i-1).getValue());
-                metadata.sizeC = double(seriesMetadata.getPixelsSizeC(i-1).getValue());
-                metadata.sizeT = double(seriesMetadata.getPixelsSizeT(i-1).getValue());
-            catch
-                % Fallback: assume single Z, multiple channels
-                metadata.sizeZ = 1;
-                metadata.sizeC = numPlanes;
-                metadata.sizeT = 1;
-            end
-            
-            % Get channel names if available
-            metadata.channelNames = cell(1, metadata.sizeC);
-            for c = 1:metadata.sizeC
-                try
-                    channelName = char(seriesMetadata.getChannelName(i-1, c-1));
-                    if ~isempty(channelName) && ~strcmp(strtrim(channelName), '')
-                        metadata.channelNames{c} = char(channelName);
-                    else
-                        metadata.channelNames{c} = sprintf('Channel %d', c);
-                    end
-                catch
-                    metadata.channelNames{c} = sprintf('Channel %d', c);
-                end
-            end
-            
-            % Store raw data for later export
-            metadata.rawData = seriesData;
-            metadata.rawMetadata = seriesMetadata;
-            
-            imageData{i} = metadata;
-            
-            % Populate table row - ENSURE ALL VALUES ARE PROPER MATLAB TYPES
-            tableData{i, 1} = false; % Logical
-            tableData{i, 2} = char(metadata.name); % Ensure char, not string or Java object
-            tableData{i, 3} = sprintf('%d×%d×%d', metadata.sizeX, metadata.sizeY, metadata.sizeZ); % char
-            tableData{i, 4} = sprintf('%d', metadata.sizeC); % char
-            
-            fprintf(' Done.\n');
-        end
-        
-        fprintf('All series loaded successfully.\n');
-        
-        % Validate table data before setting
-        fprintf('Validating table data...\n');
-        for i = 1:size(tableData, 1)
-            for j = 1:size(tableData, 2)
-                val = tableData{i, j};
-                if ~(islogical(val) || isnumeric(val) || ischar(val))
-                    warning('Invalid table entry at row %d, col %d: class = %s', i, j, class(val));
-                    % Try to convert to char
-                    if isstring(val)
-                        tableData{i, j} = char(val);
-                    else
-                        tableData{i, j} = char(string(val));
-                    end
-                    fprintf('  Converted to: %s\n', tableData{i, j});
-                end
-            end
-        end
-        fprintf('Table data validated.\n');
-        
-    catch ME
-        % If bfopen fails, throw error with helpful message
-        error('Failed to load image library: %s\n\nMake sure you have the Bio-Formats Toolbox installed from MATLAB Add-Ons.', ME.message);
+
+    handles.libraryInfoLabel.Text = 'Loading image library...';
+    handles.libraryInfoLabel.FontColor = [0 0 0.8];
+    guidata(fig, handles);
+    drawnow;
+
+    progressCb = @(msg) updateLibraryStatus(fig, msg);
+    readResult = snap_modules.prepare.readLibrary(filePath, 'ProgressCallback', progressCb);
+
+    if ~isvalid(fig)
+        return;
     end
-    
-    % Update handles
+
     handles = guidata(fig);
-    handles.imageData = imageData;
-    
-    % Set table data with error handling
-    try
-        handles.imageTable.Data = tableData;
-    catch ME2
-        fprintf('Error setting table data: %s\n', ME2.message);
-        fprintf('Attempting to diagnose issue...\n');
-        for i = 1:min(3, size(tableData, 1))
-            fprintf('Row %d: [%s, %s, %s, %s]\n', i, ...
-                class(tableData{i,1}), class(tableData{i,2}), class(tableData{i,3}), class(tableData{i,4}));
-        end
-        rethrow(ME2);
-    end
-    
+    handles.imageData = readResult.imageData;
+    handles.imageTable.Data = readResult.tableData;
     handles.filePath = filePath;
-    
-    % Determine number of channels (use first image as reference)
+    handles.numChannels = readResult.numChannels;
+
+    numSeries = numel(readResult.imageData);
     if numSeries > 0
-        numChannels = imageData{1}.sizeC;
-        handles.numChannels = numChannels;
-        
-        fprintf('Configuring channel assignments for %d channels...\n', numChannels);
-        
-        % Build dropdown items: 'None' + all channel names
+        numChannels = readResult.numChannels;
         dropdownItems = {'None'};
         for i = 1:numChannels
-            channelName = imageData{1}.channelNames{i};
+            channelName = readResult.imageData{1}.channelNames{i};
             if ~isempty(channelName) && ~strcmp(strtrim(channelName), '')
-                dropdownItems{end+1} = char(channelName);
+                dropdownItems{end+1} = char(channelName); %#ok<AGROW>
             else
-                dropdownItems{end+1} = sprintf('Channel %d', i);
+                dropdownItems{end+1} = sprintf('Channel %d', i); %#ok<AGROW>
             end
-            fprintf('  Library channel %d: %s\n', i, dropdownItems{end});
         end
-        
-        % Update all function dropdowns with these items
+
         for i = 1:8
             handles.channelFunctionDropdowns(i).Items = dropdownItems;
             handles.channelFunctionDropdowns(i).Value = 'None';
             handles.channelFunctionDropdowns(i).Enable = 'on';
         end
-        
-        fprintf('Channel configuration ready. Assign library channels to functions on the right panel.\n');
     else
         handles.numChannels = 0;
     end
-    
+
     guidata(fig, handles);
     updateSelectionCount(fig);
     updateExportButtonState(fig);
+end
+
+function updateLibraryStatus(fig, message)
+    if ~isvalid(fig)
+        return;
+    end
+    try
+        handles = guidata(fig);
+        handles.libraryInfoLabel.Text = message;
+        handles.libraryInfoLabel.FontColor = [0 0 0.8];
+        guidata(fig, handles);
+        drawnow limitrate;
+    catch
+    end
 end
 
 function updateSelectionCount(fig)
@@ -699,256 +565,7 @@ function exportImages(fig)
 end
 
 function exportImageChannels(imageInfo, mapping, outputPath)
-    % Export channels according to inverted mapping
-    % mapping is a struct with: .dic, .nuclei, .fluorescence{1:6}
-    % Each field contains the channel name from library (or 'None')
-    
-    rawData = imageInfo.rawData;
-    channelNames = imageInfo.channelNames;
-    sizeZ = imageInfo.sizeZ;
-    sizeC = imageInfo.sizeC;
-    sizeT = imageInfo.sizeT;
-    
-    % Helper function to find channel index by name
-    findChannelIndex = @(name) find(strcmp(channelNames, name), 1);
-    
-    % Use Bio-Formats reader for proper channel extraction
-    libraryPath = imageInfo.libraryPath;
-    seriesIdx = imageInfo.seriesIndex;
-    
-    % Export DIC if assigned
-    if ~strcmp(mapping.dic, 'None')
-        channelIdx = findChannelIndex(mapping.dic);
-        if ~isempty(channelIdx)
-            exportSingleChannelBF(libraryPath, seriesIdx, channelIdx, sizeZ, sizeT, ...
-                fullfile(outputPath, 'dic.tif'));
-        end
-    end
-    
-    % Export Nuclei if assigned
-    if ~strcmp(mapping.nuclei, 'None')
-        channelIdx = findChannelIndex(mapping.nuclei);
-        if ~isempty(channelIdx)
-            exportSingleChannelBF(libraryPath, seriesIdx, channelIdx, sizeZ, sizeT, ...
-                fullfile(outputPath, 'nuclei.tif'));
-        end
-    end
-    
-    % Export Fluorescence channels if assigned
-    fluorescentCount = 0;
-    for i = 1:6
-        if ~strcmp(mapping.fluorescence{i}, 'None')
-            channelIdx = findChannelIndex(mapping.fluorescence{i});
-            if ~isempty(channelIdx)
-                fluorescentCount = fluorescentCount + 1;
-                filename = sprintf('channel%d.tif', fluorescentCount);
-                exportSingleChannelBF(libraryPath, seriesIdx, channelIdx, sizeZ, sizeT, ...
-                    fullfile(outputPath, filename));
-            end
-        end
-    end
-end
-
-function exportSingleChannelBF(libraryPath, seriesIdx, channelIdx, sizeZ, sizeT, outputPath)
-    % Export a single channel using Bio-Formats native reader
-    % This ensures proper Z-stack extraction without plane interleaving issues
-    
-    % Create a Bio-Formats reader
-    reader = bfGetReader(libraryPath);
-    reader.setSeries(seriesIdx - 1); % Bio-Formats uses 0-based indexing
-    
-    try
-        % Export all Z slices for this channel
-        for t = 1:sizeT
-            for z = 1:sizeZ
-                % Bio-Formats getIndex: converts Z, C, T to linear plane index
-                % This handles dimension ordering automatically!
-                iPlane = reader.getIndex(z - 1, channelIdx - 1, t - 1) + 1; % Convert to 1-based
-                
-                % Read the plane using bfGetPlane
-                img = bfGetPlane(reader, iPlane);
-                
-                % Write to TIFF (append mode for z-stack)
-                if z == 1 && t == 1
-                    imwrite(img, outputPath, 'tif', 'Compression', 'none');
-                else
-                    imwrite(img, outputPath, 'tif', 'WriteMode', 'append', 'Compression', 'none');
-                end
-            end
-        end
-    catch ME
-        reader.close();
-        rethrow(ME);
-    end
-    
-    % Clean up
-    reader.close();
-end
-
-function exportSingleChannel(rawData, channelIdx, sizeZ, sizeC, sizeT, outputPath)
-    % OLD FUNCTION - kept for reference but no longer used
-    % Export a single channel to TIFF file
-    % rawData: cell array from bfopen
-    % channelIdx: which channel to export (1-based)
-    
-    % Bio-Formats plane ordering: Parse from labels to determine dimension order
-    % Labels are typically: "Z:1/10; C:1/3; T:1/1" or similar
-    
-    % Detect dimension order from first few planes
-    dimensionOrder = detectDimensionOrder(rawData, sizeZ, sizeC, sizeT);
-    fprintf('  Detected dimension order: %s\n', dimensionOrder);
-    
-    for t = 1:sizeT
-        for z = 1:sizeZ
-            % Calculate plane index based on detected dimension order
-            iPlane = calculatePlaneIndex(z, channelIdx, t, sizeZ, sizeC, sizeT, dimensionOrder);
-            
-            if iPlane < 1 || iPlane > size(rawData, 1)
-                warning('Plane index %d out of bounds (1-%d)', iPlane, size(rawData, 1));
-                continue;
-            end
-            
-            img = rawData{iPlane, 1}; % Get image from {image, label} pair
-            
-            % Write to TIFF (append mode for z-stack)
-            if z == 1 && t == 1
-                imwrite(img, outputPath, 'tif', 'Compression', 'none');
-            else
-                imwrite(img, outputPath, 'tif', 'WriteMode', 'append', 'Compression', 'none');
-            end
-        end
-    end
-end
-
-function dimOrder = detectDimensionOrder(rawData, sizeZ, sizeC, sizeT)
-    % Detect dimension order from Bio-Formats plane labels
-    % Returns 'XYZCT', 'XYZTC', 'XYCZT', 'XYCTZ', 'XYTCZ', or 'XYTZC'
-    
-    % Default assumption
-    dimOrder = 'XYZCT'; % Z fastest, then C, then T
-    
-    % Check first few planes to detect which dimension varies first
-    if size(rawData, 1) >= 2
-        % Parse first two plane labels
-        label1 = rawData{1, 2};
-        label2 = rawData{2, 2};
-        
-        % Extract Z, C, T values from labels (format: "Z:1/10; C:1/3; T:1/1")
-        z1 = extractDimValue(label1, 'Z');
-        c1 = extractDimValue(label1, 'C');
-        t1 = extractDimValue(label1, 'T');
-        
-        z2 = extractDimValue(label2, 'Z');
-        c2 = extractDimValue(label2, 'C');
-        t2 = extractDimValue(label2, 'T');
-        
-        fprintf('  Plane 1: Z=%d, C=%d, T=%d\n', z1, c1, t1);
-        fprintf('  Plane 2: Z=%d, C=%d, T=%d\n', z2, c2, t2);
-        
-        % Determine which dimension changed
-        if z2 ~= z1
-            % Z varies fastest
-            if sizeC > 1 && size(rawData, 1) > sizeZ
-                % Check if C or T varies second
-                label_next = rawData{min(sizeZ+1, size(rawData,1)), 2};
-                c_next = extractDimValue(label_next, 'C');
-                t_next = extractDimValue(label_next, 'T');
-                if c_next ~= c1
-                    dimOrder = 'XYZCT'; % Z, then C, then T
-                else
-                    dimOrder = 'XYZTC'; % Z, then T, then C
-                end
-            end
-        elseif c2 ~= c1
-            % C varies fastest
-            if sizeZ > 1 && size(rawData, 1) > sizeC
-                label_next = rawData{min(sizeC+1, size(rawData,1)), 2};
-                z_next = extractDimValue(label_next, 'Z');
-                t_next = extractDimValue(label_next, 'T');
-                if z_next ~= z1
-                    dimOrder = 'XYCZT'; % C, then Z, then T
-                else
-                    dimOrder = 'XYCTZ'; % C, then T, then Z
-                end
-            end
-        elseif t2 ~= t1
-            % T varies fastest (rare)
-            dimOrder = 'XYTCZ'; % T, then C, then Z
-        end
-    end
-end
-
-function val = extractDimValue(label, dim)
-    % Extract dimension value from Bio-Formats label
-    % Example: "Z:5/10; C:2/3; T:1/1" -> extractDimValue(label, 'Z') = 5
-    
-    pattern = sprintf('%s:(\\d+)/', dim);
-    tokens = regexp(label, pattern, 'tokens');
-    if ~isempty(tokens) && ~isempty(tokens{1})
-        val = str2double(tokens{1}{1});
-    else
-        val = 1; % Default
-    end
-end
-
-function iPlane = calculatePlaneIndex(z, c, t, sizeZ, sizeC, sizeT, dimOrder)
-    % Calculate plane index based on dimension order
-    % All indices are 1-based
-    
-    switch dimOrder
-        case 'XYZCT' % Z fastest, then C, then T
-            iPlane = (t-1)*sizeZ*sizeC + (c-1)*sizeZ + z;
-        case 'XYZTC' % Z fastest, then T, then C
-            iPlane = (c-1)*sizeZ*sizeT + (t-1)*sizeZ + z;
-        case 'XYCZT' % C fastest, then Z, then T
-            iPlane = (t-1)*sizeC*sizeZ + (z-1)*sizeC + c;
-        case 'XYCTZ' % C fastest, then T, then Z
-            iPlane = (z-1)*sizeC*sizeT + (t-1)*sizeC + c;
-        case 'XYTCZ' % T fastest, then C, then Z
-            iPlane = (z-1)*sizeT*sizeC + (c-1)*sizeT + t;
-        case 'XYTZC' % T fastest, then Z, then C
-            iPlane = (c-1)*sizeT*sizeZ + (z-1)*sizeT + t;
-        otherwise
-            % Default to XYZCT
-            iPlane = (t-1)*sizeZ*sizeC + (c-1)*sizeZ + z;
-    end
-end
-
-%% Utility Functions
-
-function extractedName = extractNameFromString(rawString)
-    % Extract name from patterns like "name=..." or "Name=..." in metadata string
-    % Falls back to full string if pattern not found
-    
-    if isempty(rawString)
-        extractedName = '';
-        return;
-    end
-    
-    % Try to find "name=" or "Name=" pattern (various formats)
-    patterns = {
-        'name\s*=\s*"([^"]+)"',      % name="value"
-        'name\s*=\s*''([^'']+)''',   % name='value'
-        'Name\s*=\s*"([^"]+)"',      % Name="value"
-        'Name\s*=\s*''([^'']+)''',   % Name='value'
-        'NAME\s*=\s*"([^"]+)"',      % NAME="value"
-        'NAME\s*=\s*''([^'']+)''',   % NAME='value'
-        'name\s*=\s*([^,;\s]+)',     % name=value (no quotes, up to delimiter)
-        'Name\s*=\s*([^,;\s]+)',     % Name=value (no quotes, up to delimiter)
-        'NAME\s*=\s*([^,;\s]+)'      % NAME=value (no quotes, up to delimiter)
-    };
-    
-    for p = 1:length(patterns)
-        tokens = regexp(rawString, patterns{p}, 'tokens', 'once', 'ignorecase');
-        if ~isempty(tokens)
-            extractedName = strtrim(tokens{1});
-            fprintf('    Extracted name: "%s" from "%s"\n', extractedName, rawString);
-            return;
-        end
-    end
-    
-    % No pattern found, use the full string
-    extractedName = rawString;
+    snap_modules.prepare.exportMappedChannels(imageInfo, mapping, outputPath);
 end
 
 function safeName = createSafeFolderName(originalName, index)
@@ -995,24 +612,61 @@ function safeName = createSafeFolderName(originalName, index)
 end
 
 function hasIt = checkBioFormats()
-    % Check if MATLAB's Bio-Formats Toolbox is available
+    % Check if at least one library reader provider is available.
     
     hasIt = false;
     
-    fprintf('SNAP_prepare: Checking for Bio-Formats Toolbox...\n');
+    fprintf('SNAP_prepare: Checking for available library readers...\n');
     
-    % Check if bfopen exists (main function from MATLAB's Bio-Formats Toolbox)
+    % Built-in Bio-Formats provider
     if exist('bfopen', 'file')
         fprintf('  ✓ Bio-Formats Toolbox found (bfopen detected)\n');
         hasIt = true;
         return;
     end
+
+    % External modular providers
+    if hasExternalPrepareReaders()
+        fprintf('  ✓ External SNAP_prepare reader plugin(s) detected\n');
+        hasIt = true;
+        return;
+    end
     
-    fprintf('  ✗ Bio-Formats Toolbox not found.\n');
-    fprintf('     Please install from MATLAB Add-On Explorer.\n');
+    fprintf('  ✗ No reader providers detected.\n');
+    fprintf('     Install Bio-Formats or add external reader plugins.\n');
     
     % Show installation dialog
     showBioFormatsDialog();
+end
+
+function tf = hasExternalPrepareReaders()
+    tf = false;
+
+    dirs = {};
+    dirs{end+1} = fullfile(fileparts(mfilename('fullpath')), 'plugins', 'prepare', 'readers');
+
+    envDirs = getenv('SNAP_PREPARE_PROVIDER_PATH');
+    if ~isempty(envDirs)
+        dirs = [dirs, strsplit(envDirs, pathsep)]; %#ok<AGROW>
+    end
+
+    dirs = unique(dirs, 'stable');
+    for i = 1:numel(dirs)
+        d = dirs{i};
+        if isempty(d) || ~isfolder(d)
+            continue;
+        end
+        files = dir(fullfile(d, '*.m'));
+        for j = 1:numel(files)
+            [~, name] = fileparts(files(j).name);
+            lname = lower(name);
+            if startsWith(name, '_') || contains(lname, 'template')
+                continue;
+            end
+            tf = true;
+            return;
+        end
+    end
 end
 
 function showBioFormatsDialog()
@@ -1025,18 +679,19 @@ function showBioFormatsDialog()
     grid.RowSpacing = 15;
     
     % Instructions
-    msg = ['Bio-Formats Toolbox is required but not installed.\n\n' ...
-           'To install Bio-Formats Toolbox:\n\n' ...
+    msg = ['No SNAP_prepare reader provider is currently available.\n\n' ...
+           'Option 1: Install Bio-Formats Toolbox:\n\n' ...
            '1. In MATLAB, go to: Home → Add-Ons → Get Add-Ons\n' ...
            '2. Search for "Bio-Formats"\n' ...
            '3. Install "Bio-Formats Toolbox" by OME Consortium\n' ...
            '4. Restart MATLAB\n' ...
            '5. Run SNAP_prepare again\n\n' ...
+           'Option 2: Add an external reader plugin to:\n' ...
+           '   plugins/prepare/readers/ (or SNAP_PREPARE_PROVIDER_PATH)\n\n' ...
            'Alternative: You can also install from:\n' ...
            'File Exchange: https://www.mathworks.com/matlabcentral/fileexchange/\n' ...
            'Search for "Bio-Formats Toolbox"\n\n' ...
-           'Note: This is different from the standalone bfmatlab package.\n' ...
-           'SNAP_prepare requires the MATLAB Add-On version.'];
+           'Note: The built-in reader uses the MATLAB Add-On Bio-Formats package.'];
     
     textArea = uitextarea(grid, 'Value', sprintf(msg), 'Editable', 'off', ...
         'FontSize', 11, 'FontName', 'Helvetica');
@@ -1080,5 +735,3 @@ function openAddOnExplorer(parentFig)
     end
     close(parentFig);
 end
-
-

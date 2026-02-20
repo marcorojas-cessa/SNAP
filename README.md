@@ -248,6 +248,127 @@ SNAP_classify
 
 ---
 
+## Modular Architecture
+
+SNAP is compartmentalized so core UIs remain stable while algorithmic methods can evolve through pluggable modules.
+
+### Design Intent
+
+The architecture is built around scientific reproducibility:
+- Keep preprocessing, detection, fitting, and classification behavior explicit and auditable
+- Preserve quantitative output schemas unless intentionally versioned
+- Keep channel behavior homogeneous by running channels through shared pipeline stages
+- Allow extension without modifying `SNAP.m`, `SNAP_batch.m`, `SNAP_prepare.m`, or `SNAP_train.m`
+
+### Shared Runtime Engines
+
+- **Signal pipeline engine**: `+snap_modules/+signal/runPipeline.m`
+  - Used by `SNAP_batch` and `SNAP_train`
+  - Executes one selected plugin per stage (highest-priority enabled plugin wins)
+  - Stage order:
+    - `signal_processing`
+    - `maxima_detection`
+    - `gaussian_fitting`
+    - `fit_filtering`
+    - `classification`
+    - `nuclei_filtering`
+
+- **Prepare engines**:
+  - `+snap_modules/+prepare/readLibrary.m`
+  - `+snap_modules/+prepare/exportMappedChannels.m`
+  - Used by `SNAP_prepare` for reader/exporter selection
+
+### Built-In Module Sources
+
+- Signal built-ins: `+snap_modules/+plugins/+signal/*.m`
+- Prepare built-ins: `+snap_modules/+plugins/+prepare/*.m`
+
+Built-ins wrap the established SNAP helper methods to preserve current behavior while exposing clear extension boundaries.
+
+### External Extension Points
+
+- Signal plugins:
+  - `plugins/signal/`
+  - `SNAP_SIGNAL_PLUGIN_PATH` (path-separated directories)
+- SNAP_prepare reader plugins:
+  - `plugins/prepare/readers/`
+  - `SNAP_PREPARE_PROVIDER_PATH`
+- SNAP_prepare exporter plugins:
+  - `plugins/prepare/exporters/`
+  - `SNAP_PREPARE_EXPORTER_PATH`
+
+Included templates:
+- `plugins/signal/template_signal_plugin.m`
+- `plugins/prepare/readers/template_prepare_reader.m`
+- `plugins/prepare/exporters/template_prepare_exporter.m`
+
+### Collaboration Guide (In-Repo)
+
+This README is the canonical contributor guide for modular development.
+
+#### Engineering Rules
+
+1. Keep app entrypoints thin (`SNAP.m`, `SNAP_batch.m`, `SNAP_prepare.m`, `SNAP_train.m`, `SNAP_classify.m`).
+2. Add/replace algorithm behavior through plugins, not by hard-coding app logic.
+3. Maintain backward compatibility for parameter files and exported analysis formats.
+4. Keep progress logging informative but non-blocking.
+5. Avoid hidden global state in plugins.
+
+#### Signal Plugin Contract
+
+Signal plugin function returns a struct with:
+- `id` (unique string)
+- `stage` (one of: `signal_processing`, `maxima_detection`, `gaussian_fitting`, `fit_filtering`, `classification`, `nuclei_filtering`)
+- `displayName` (string)
+- `priority` (numeric; highest enabled plugin wins within a stage)
+- `version` (string)
+- `supportsFcn` (optional function handle)
+- `isEnabledFcn` (optional function handle)
+- `run` (function handle with signature `state = run(state, context)`)
+
+Common `state` fields:
+- `rawImage`
+- `processedImage`
+- `maximaCoords`
+- `fitResults`
+- `aborted`
+
+Common `context` fields:
+- `channelIdx`
+- `params`
+- `handles`
+- `mode`
+- `progressCallback`
+
+#### SNAP_prepare Reader Contract
+
+Reader provider function returns a struct with:
+- `id`, `displayName`, `priority`, `version`
+- `canReadFcn(filePath) -> logical`
+- `readFcn(filePath, progressCb) -> struct`
+
+Reader output must include:
+- `imageData` (cell)
+- `tableData` (cell)
+- `numChannels` (scalar numeric)
+
+#### SNAP_prepare Exporter Contract
+
+Exporter provider function returns a struct with:
+- `id`, `displayName`, `priority`, `version`
+- `canExportFcn(imageInfo, mapping, outputPath) -> logical`
+- `exportFcn(imageInfo, mapping, outputPath, progressCb)`
+
+#### Quality Checklist for Plugin PRs
+
+1. Plugin loads without warnings.
+2. Default built-in behavior is preserved in `SNAP_batch`, `SNAP_prepare`, and `SNAP_train`.
+3. Output schemas remain stable unless intentionally versioned and documented.
+4. Progress callbacks never crash or block the pipeline.
+5. Existing `.mat` parameter files and existing classifiers remain loadable/usable.
+
+---
+
 ## Documentation
 
 ### Project Structure
@@ -261,6 +382,11 @@ SNAP/
 ├── SNAP_train.m              # Programmatic + interactive SVM training from labels
 ├── compareMaximaWithLabeled.m # Utility for maxima/label comparison
 ├── README.md                 # This file
+│
+├── +snap_modules/            # Shared modular engines
+│   ├── +signal/              # Shared signal pipeline runner + registry
+│   ├── +prepare/             # SNAP_prepare provider/exporter engines
+│   └── +plugins/             # Built-in module plugins
 │
 └── +snap_helpers/            # Core processing functions
     ├── createUI.m            # Build main GUI
@@ -299,6 +425,12 @@ SNAP/
         ├── evaluateExpression.m  # Custom feature expressions
         ├── saveClassifier.m      # Save model + normalization
         └── loadClassifier.m      # Load trained classifier
+
+plugins/
+├── signal/                   # External signal-stage plugins
+└── prepare/
+    ├── readers/              # External library reader providers
+    └── exporters/            # External channel exporters
 ```
 
 ### Key Parameters

@@ -1,4 +1,4 @@
-function out = SNAP_train(exportFiles, labelFiles, outputClassifierPath, varargin)
+function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, varargin)
 % SNAP_train - Train and validate a SNAP-compatible SVM from labeled spot files
 %
 % UI MODE:
@@ -66,10 +66,9 @@ function out = SNAP_train(exportFiles, labelFiles, outputClassifierPath, varargi
 
     if nargin == 0
         uiState = runTrainingUI();
+        fprintf('SNAP_train initiated.\n');
         if nargout > 0
-            out = uiState;
-        else
-            fprintf('SNAP_train initiated.\n');
+            varargout{1} = uiState;
         end
         return;
     end
@@ -284,6 +283,10 @@ function out = SNAP_train(exportFiles, labelFiles, outputClassifierPath, varargi
         fprintf('  Classifier: %s\n\n', outputClassifierPath);
     end
     emitProgress(progressCb, 'Classifier saved: %s', outputClassifierPath);
+
+    if nargout > 0
+        varargout{1} = out;
+    end
 end
 
 function out = runTrainingUI()
@@ -2058,94 +2061,6 @@ function [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, channelIdx, 
     end
 end
 
-function csvMap = buildCsvLookupMap(csvFiles, progressCb)
-    if nargin < 2
-        progressCb = [];
-    end
-    csvMap = containers.Map('KeyType', 'char', 'ValueType', 'any');
-    nCsv = numel(csvFiles);
-    if ~isempty(progressCb)
-        progressCb(sprintf('CSV lookup map: indexing %d file(s)...', nCsv));
-    end
-    for i = 1:numel(csvFiles)
-        csvPath = csvFiles{i};
-        [csvDir, csvBase, ~] = fileparts(csvPath);
-        aliases = derivePairBaseAliases(csvBase);
-        for k = 1:numel(aliases)
-            key = makePairLookupKey(csvDir, aliases{k});
-            if isKey(csvMap, key)
-                existing = csvMap(key);
-            else
-                existing = {};
-            end
-            if isempty(existing)
-                existing = {csvPath};
-            elseif ~any(strcmp(existing, csvPath))
-                existing{end+1,1} = csvPath; %#ok<AGROW>
-            end
-            csvMap(key) = existing;
-        end
-
-        if ~isempty(progressCb) && (nCsv <= 20 || mod(i, 25) == 0 || i == nCsv)
-            progressCb(sprintf('CSV lookup map: indexed %d/%d file(s).', i, nCsv));
-        end
-    end
-end
-
-function csvMap = buildExactCsvMap(csvFiles, progressCb)
-    if nargin < 2
-        progressCb = [];
-    end
-    csvMap = containers.Map('KeyType', 'char', 'ValueType', 'char');
-    nCsv = numel(csvFiles);
-    if ~isempty(progressCb)
-        progressCb(sprintf('Exact-name map: indexing %d CSV file(s)...', nCsv));
-    end
-
-    for i = 1:nCsv
-        csvPath = csvFiles{i};
-        [csvDir, csvBase, ~] = fileparts(csvPath);
-
-        key = makePairLookupKey(csvDir, csvBase);
-        if ~isKey(csvMap, key)
-            csvMap(key) = csvPath;
-        end
-
-        % Compatibility alias: allow image base to include/omit trailing ".ome".
-        omeTrimmed = regexprep(csvBase, '\.ome$', '', 'ignorecase');
-        if ~strcmpi(omeTrimmed, csvBase)
-            keyNoOme = makePairLookupKey(csvDir, omeTrimmed);
-            if ~isKey(csvMap, keyNoOme)
-                csvMap(keyNoOme) = csvPath;
-            end
-        end
-
-        if ~isempty(progressCb) && (nCsv <= 20 || mod(i, 25) == 0 || i == nCsv)
-            progressCb(sprintf('Exact-name map: indexed %d/%d CSV file(s).', i, nCsv));
-        end
-    end
-end
-
-function labelPath = findExactCsvForImage(imagePath, csvMap)
-    [imageDir, imageBase, ~] = fileparts(imagePath);
-    labelPath = '';
-
-    keyExact = makePairLookupKey(imageDir, imageBase);
-    if isKey(csvMap, keyExact)
-        labelPath = csvMap(keyExact);
-        return;
-    end
-
-    % Compatibility alias for ".ome" base differences.
-    imageBaseNoOme = regexprep(imageBase, '\.ome$', '', 'ignorecase');
-    if ~strcmpi(imageBaseNoOme, imageBase)
-        keyNoOme = makePairLookupKey(imageDir, imageBaseNoOme);
-        if isKey(csvMap, keyNoOme)
-            labelPath = csvMap(keyNoOme);
-        end
-    end
-end
-
 function labelPath = findExactCsvForImageInList(imagePath, csvFiles)
     labelPath = '';
     [imageDir, imageBase, ~] = fileparts(imagePath);
@@ -2173,52 +2088,6 @@ function labelPath = findExactCsvForImageInList(imagePath, csvFiles)
     if ~isempty(fallbackPath)
         labelPath = fallbackPath;
     end
-end
-
-function labelPath = findMatchingCsvForImage(imagePath, csvMap)
-    labelPath = '';
-    [imageDir, imageBase, ~] = fileparts(imagePath);
-    aliases = derivePairBaseAliases(imageBase);
-
-    bestScore = -inf;
-    for i = 1:numel(aliases)
-        key = makePairLookupKey(imageDir, aliases{i});
-        if ~isKey(csvMap, key)
-            continue;
-        end
-        candidates = csvMap(key);
-        for c = 1:numel(candidates)
-            candidate = candidates{c};
-            [~, candBase, ~] = fileparts(candidate);
-            score = 0;
-            if strcmpi(candBase, imageBase)
-                score = score + 100;
-            end
-            if strcmpi(candBase, aliases{i})
-                score = score + 20;
-            end
-            if contains(lower(candBase), 'label')
-                score = score + 2;
-            end
-            if score > bestScore
-                bestScore = score;
-                labelPath = candidate;
-            end
-        end
-    end
-end
-
-function key = makePairLookupKey(dirPath, baseName)
-    key = lower(fullfile(char(string(dirPath)), char(string(baseName))));
-end
-
-function aliases = derivePairBaseAliases(baseName)
-    baseName = char(string(baseName));
-    aliases = {baseName};
-    aliases{end+1} = regexprep(baseName, '\.ome$', '', 'ignorecase'); %#ok<AGROW>
-    aliases{end+1} = regexprep(baseName, '_labels?$', '', 'ignorecase'); %#ok<AGROW>
-    aliases{end+1} = regexprep(baseName, '_points?$', '', 'ignorecase'); %#ok<AGROW>
-    aliases = unique(aliases(~cellfun(@isempty, aliases)), 'stable');
 end
 
 function [exportFiles, labelFiles] = discoverLegacyMatPairs(rootDir, channelIdx, progressCb)
@@ -2882,17 +2751,6 @@ function fitData = buildFitDataFromImage(imagePath, params, channelIdx, progress
     rawImage = loadImageVolumeForTraining(imagePath);
     emitProgress(progressCb, 'Loaded image volume (ch=%d): size=%s', channelIdx, mat2str(size(rawImage)));
     handles = createTrainingHandlesFromParams(params, channelIdx);
-    handles.rawChannel = cell(1, handles.Nmax);
-    handles.rawChannel{channelIdx} = rawImage;
-
-    processed = snap_helpers.processImage(handles, channelIdx);
-    if isempty(processed)
-        emitProgress(progressCb, 'Preprocessing returned empty image (ch=%d).', channelIdx);
-        fitData = struct([]);
-        return;
-    end
-    emitProgress(progressCb, 'Preprocessing complete (ch=%d).', channelIdx);
-
     maximaEnabled = logical(getChannelParamValue(params, 'maximaEnabled', channelIdx, true));
     if ~maximaEnabled
         emitProgress(progressCb, 'Maxima detection disabled in parameters (ch=%d).', channelIdx);
@@ -2900,36 +2758,38 @@ function fitData = buildFitDataFromImage(imagePath, params, channelIdx, progress
         return;
     end
 
-    maximaCoords = snap_helpers.detectMaxima(processed, handles, channelIdx);
-    if isempty(maximaCoords)
-        emitProgress(progressCb, 'No maxima detected (ch=%d).', channelIdx);
-        fitData = struct([]);
-        return;
-    end
-    emitProgress(progressCb, 'Detected %d maxima candidate(s) (ch=%d).', size(maximaCoords, 1), channelIdx);
-
     fitEnabled = logical(getChannelParamValue(params, 'gaussFitEnabled', channelIdx, true));
     if ~fitEnabled
         error('gaussFitEnabled is false for channel %d; SNAP_train requires fitted candidates for feature extraction.', channelIdx);
     end
 
-    fitParams = extractTrainingFitParams(params, channelIdx);
-    is3D = (ndims(rawImage) == 3 && size(rawImage, 3) > 1);
-    fitTimer = tic;
-    emitProgress(progressCb, 'Gaussian fitting started for %d maxima (ch=%d).', size(maximaCoords, 1), channelIdx);
-    fitData = snap_helpers.fitGaussians(rawImage, maximaCoords, fitParams, is3D, [], 5, progressCb, 250);
-    emitProgress(progressCb, 'Gaussian fitting complete (ch=%d): %d fit result(s) in %.2f s.', ...
-        channelIdx, numel(fitData), toc(fitTimer));
+    pipelineContext = struct();
+    pipelineContext.mode = 'train';
+    pipelineContext.channelIdx = channelIdx;
+    pipelineContext.params = params;
+    pipelineContext.handles = handles;
+    pipelineContext.progressCallback = progressCb;
+    pipelineContext.enableClassification = false;
+    pipelineContext.enableNucleiFiltering = false;
+    pipelineContext.fitParams = extractTrainingFitParams(params, channelIdx);
+    pipelineContext.fitProgressInterval = 250;
+    pipelineContext.fitAbortPollInterval = 5;
 
-    filterEnabled = logical(getChannelParamValue(params, 'fitFilterEnabled', channelIdx, false));
-    if filterEnabled && ~isempty(fitData)
-        nBefore = numel(fitData);
-        emitProgress(progressCb, 'Applying fit filters (ch=%d)...', channelIdx);
-        fitData = snap_helpers.applyFitFiltering(fitData, channelIdx, handles);
-        emitProgress(progressCb, 'Fit filtering complete (ch=%d): %d -> %d candidate(s).', ...
-            channelIdx, nBefore, numel(fitData));
+    pipelineResult = snap_modules.signal.runPipeline(rawImage, pipelineContext);
+    if isempty(pipelineResult.processedImage)
+        emitProgress(progressCb, 'Preprocessing returned empty image (ch=%d).', channelIdx);
+        fitData = struct([]);
+        return;
     end
 
+    maximaCoords = pipelineResult.maximaCoords;
+    if isempty(maximaCoords)
+        emitProgress(progressCb, 'No maxima detected (ch=%d).', channelIdx);
+        fitData = struct([]);
+        return;
+    end
+
+    fitData = pipelineResult.fitResults;
     fitData = normalizeFitDataLocal(fitData);
     emitProgress(progressCb, 'Image candidate generation complete (ch=%d): %d candidate(s), %.2f s total.', ...
         channelIdx, numel(fitData), toc(imageTimer));
