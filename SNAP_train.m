@@ -135,10 +135,11 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
 
     [~, featureInfo] = snap_helpers.classification.getAvailableFeatures(char(fittingMethod), has3D, false);
     selectedFeatures = normalizeSelectedFeatures(opts.SelectedFeatures, featureInfo);
+    customExpressions = normalizeCustomExpressionList(opts.CustomExpressions);
 
-    [XTrain, featureNames, validTrainMask, extractionInfoTrain] = snap_helpers.classification.buildFeatureMatrix( ...
-        trainFitData, selectedFeatures, featureInfo, opts.CustomExpressions);
-    emitProgress(progressCb, 'Training feature matrix built: %d candidate rows, %d feature columns.', size(XTrain,1), size(XTrain,2));
+    [XTrain, featureNames, validTrainMask, extractionInfoTrain, selectedFeatures, customExpressions] = ...
+        buildTrainingFeatureMatrixWithFallback( ...
+            trainFitData, selectedFeatures, featureInfo, customExpressions, progressCb);
 
     XTrain = XTrain(validTrainMask, :);
     yTrain = trainLabels(validTrainMask);
@@ -146,6 +147,24 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
     fixedTrainLabels = yTrain; % immutable reference labels used for all sweep candidates
     emitProgress(progressCb, 'Training dataset after filtering: %d samples (real=%d, noise=%d).', ...
         numel(yTrain), sum(yTrain == 1), sum(yTrain == 0));
+
+    if isempty(yTrain)
+        detail = '';
+        if isstruct(extractionInfoTrain) && isfield(extractionInfoTrain, 'featuresAllNaN') && ...
+                ~isempty(extractionInfoTrain.featuresAllNaN)
+            bad = extractionInfoTrain.featuresAllNaN;
+            bad = bad(1:min(8, numel(bad)));
+            detail = sprintf(' Features all-NaN: %s.', strjoin(bad, ', '));
+        end
+        if isstruct(extractionInfoTrain) && isfield(extractionInfoTrain, 'warnings') && ~isempty(extractionInfoTrain.warnings)
+            warnPreview = extractionInfoTrain.warnings;
+            warnPreview = warnPreview(1:min(3, numel(warnPreview)));
+            detail = sprintf('%s Feature extraction warnings: %s', detail, strjoin(warnPreview, ' | '));
+        end
+        error(['No valid training samples remained after feature extraction. ', ...
+               'This usually means one or more selected base features or custom expressions are incompatible ', ...
+               'with the generated fit-result fields for this fitting method.%s'], detail);
+    end
 
     if sum(yTrain == 1) < 5 || sum(yTrain == 0) < 5
         error('Need at least 5 valid samples per class for training. Got real=%d, noise=%d.', ...
@@ -179,12 +198,23 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
         emitProgress(progressCb, 'Building labeled validation dataset (%d pair(s))...', numel(valExport));
         [valFitData, valLabelsRaw] = buildLabeledDataset(valExport, valLabels, opts.MatchDistance, datasetBuildOptsVal);
         [XVal, ~, validValMask, extractionInfoVal] = snap_helpers.classification.buildFeatureMatrix( ...
-            valFitData, selectedFeatures, featureInfo, opts.CustomExpressions);
+            valFitData, selectedFeatures, featureInfo, customExpressions);
         emitProgress(progressCb, 'Validation feature matrix built: %d candidate rows, %d feature columns.', size(XVal,1), size(XVal,2));
+        if isstruct(extractionInfoVal) && isfield(extractionInfoVal, 'featuresAllNaN') && ...
+                ~isempty(extractionInfoVal.featuresAllNaN)
+            emitProgress(progressCb, 'Validation feature extraction all-NaN feature(s): %s', ...
+                strjoin(extractionInfoVal.featuresAllNaN, ', '));
+        end
         XVal = XVal(validValMask, :);
         yVal = valLabelsRaw(validValMask);
         emitProgress(progressCb, 'Validation dataset after filtering: %d samples (real=%d, noise=%d).', ...
             numel(yVal), sum(yVal == 1), sum(yVal == 0));
+        hasUsableValidation = ~isempty(yVal) && any(yVal == 1) && any(yVal == 0);
+        if ~hasUsableValidation
+            emitProgress(progressCb, ['Validation set is not usable after filtering (requires both classes). ', ...
+                'Will train without sweep and skip validation metrics.']);
+            doSweep = false;
+        end
 
         validation.nSamples = numel(yVal);
         validation.nReal = sum(yVal == 1);
@@ -211,7 +241,12 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
             bestParams = trainOptions;
         end
 
-        [validation.metrics, validation.confusionMatrix] = evaluateOnValidation(model, normParams, XVal, yVal);
+        if hasUsableValidation
+            [validation.metrics, validation.confusionMatrix] = evaluateOnValidation(model, normParams, XVal, yVal);
+        else
+            validation.metrics = struct('accuracy', NaN, 'precisionReal', NaN, 'recallReal', NaN, 'f1Real', NaN);
+            validation.confusionMatrix = zeros(2, 2);
+        end
     else
         trainOptions = applyTrainingDefaults(opts.TrainingOptions);
         emitProgress(progressCb, 'Training SVM (no validation set)...');
@@ -244,7 +279,7 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
 
     success = snap_helpers.classification.saveClassifier( ...
         outputClassifierPath, model, selectedFeatures, featureInfo, trainStats, ...
-        char(fittingMethod), metadata, opts.CustomExpressions, normParams);
+        char(fittingMethod), metadata, customExpressions, normParams);
 
     if ~success
         error('Failed to save classifier to %s', outputClassifierPath);
@@ -260,7 +295,7 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
     out.nSamples = numel(yTrain);
     out.nReal = sum(yTrain == 1);
     out.nNoise = sum(yTrain == 0);
-    out.customExpressions = opts.CustomExpressions;
+    out.customExpressions = customExpressions;
     out.bestParams = bestParams;
     out.outputClassifierPath = outputClassifierPath;
     if hasValidationSet
@@ -279,7 +314,7 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
         elseif isfield(trainStats, 'trainAccuracy')
             fprintf('  Train accuracy: %.2f%%\n', 100 * trainStats.trainAccuracy);
         end
-        fprintf('  Features: %d\n', numel(selectedFeatures) + numel(opts.CustomExpressions));
+        fprintf('  Features: %d\n', numel(selectedFeatures) + numel(customExpressions));
         fprintf('  Classifier: %s\n\n', outputClassifierPath);
     end
     emitProgress(progressCb, 'Classifier saved: %s', outputClassifierPath);
@@ -361,15 +396,20 @@ function out = runTrainingUI()
 
     % Feature / expression selection (shared engine with SNAP_classify)
     featurePanel = uipanel(cfgGrid, 'Title', 'Features & Custom Expressions');
-    featureGrid = uigridlayout(featurePanel, [3, 1]);
-    featureGrid.RowHeight = {'fit', 'fit', 90};
+    featureGrid = uigridlayout(featurePanel, [4, 1]);
+    featureGrid.RowHeight = {'fit', 'fit', 'fit', 90};
     featureGrid.Padding = [6 6 6 6];
     featureGrid.RowSpacing = 4;
     selectFeaturesBtn = uibutton(featureGrid, 'Text', 'Select Features...', 'Enable', 'off');
+    selectFeaturesBtn.Layout.Row = 1;
+    loadFeaturePackBtn = uibutton(featureGrid, 'Text', 'Load Expression Pack...', 'Enable', 'off');
+    loadFeaturePackBtn.Layout.Row = 2;
     featureCountLabel = uilabel(featureGrid, 'Text', 'AUTO: all non-position features (per channel)');
     featureCountLabel.FontColor = [0.45 0.45 0.45];
+    featureCountLabel.Layout.Row = 3;
     featureListArea = uitextarea(featureGrid, 'Editable', 'off', ...
         'Value', {'AUTO: all non-position features', 'Custom expressions: none'});
+    featureListArea.Layout.Row = 4;
 
     % Manual SVM options
     svmPanel = uipanel(cfgGrid, 'Title', 'Manual SVM Hyperparameters');
@@ -495,6 +535,7 @@ function out = runTrainingUI()
     handles.sweepScaleInput = sweepScaleInput;
     handles.sweepPolyInput = sweepPolyInput;
     handles.selectFeaturesBtn = selectFeaturesBtn;
+    handles.loadFeaturePackBtn = loadFeaturePackBtn;
     handles.featureCountLabel = featureCountLabel;
     handles.featureListArea = featureListArea;
     handles.channelFeatureConfigs = repmat(defaultChannelFeatureConfig(), 1, 1);
@@ -517,6 +558,7 @@ function out = runTrainingUI()
         channelTable.CellSelectionCallback = @(~,evt) onChannelTableSelectionChanged(fig, evt);
     end
     selectFeaturesBtn.ButtonPushedFcn = @(~,~) onSelectTrainingFeatures(fig);
+    loadFeaturePackBtn.ButtonPushedFcn = @(~,~) onLoadExpressionPack(fig);
     optimizeCheck.ValueChangedFcn = @(~,~) updateOptimizationControlState(fig);
     trainBtn.ButtonPushedFcn = @(~,~) onTrainSelectedChannels(fig);
 
@@ -547,6 +589,9 @@ function onBrowseParameterFile(fig)
     handles.loadedParams = params;
     if isfield(handles, 'selectFeaturesBtn') && isgraphics(handles.selectFeaturesBtn)
         handles.selectFeaturesBtn.Enable = 'on';
+    end
+    if isfield(handles, 'loadFeaturePackBtn') && isgraphics(handles.loadFeaturePackBtn)
+        handles.loadFeaturePackBtn.Enable = 'on';
     end
     guidata(fig, handles);
     updateChannelTableFromDetectedChannels(fig, numChannels, true);
@@ -893,6 +938,205 @@ function onSelectTrainingFeatures(fig)
     refreshTrainingFeatureSummary(fig, contextChannel);
 end
 
+function onLoadExpressionPack(fig)
+    handles = guidata(fig);
+    if isempty(handles.loadedParams) || ~isstruct(handles.loadedParams) || isempty(fieldnames(handles.loadedParams))
+        uialert(fig, 'Load a parameter file first so channel context is defined.', 'Missing Parameter File');
+        return;
+    end
+
+    [file, path] = uigetfile({'*.mat', 'Expression pack MAT files (*.mat)'}, ...
+        'Select SVM expression pack file');
+    if isequal(file, 0)
+        return;
+    end
+    packPath = fullfile(path, file);
+
+    [pack, errMsg] = loadExpressionPackForTraining(packPath);
+    if ~isempty(errMsg)
+        uialert(fig, errMsg, 'Expression Pack Error');
+        return;
+    end
+
+    tableData = handles.channelTable.Data;
+    if isempty(tableData)
+        uialert(fig, 'No channels are currently configured in SNAP_train.', 'No Channels');
+        return;
+    end
+
+    nRows = size(tableData, 1);
+    appliedChannels = [];
+    skippedChannels = [];
+    totalBase = 0;
+    totalCustom = 0;
+    totalDroppedBase = 0;
+    totalDroppedCustom = 0;
+    compatLogLines = {};
+
+    for i = 1:numel(pack.channelPacks)
+        chPack = pack.channelPacks(i);
+        channelIdx = inferPackChannelIndex(chPack, i);
+        if ~isfinite(channelIdx)
+            skippedChannels(end+1) = i; %#ok<AGROW>
+            continue;
+        end
+        channelIdx = round(channelIdx);
+
+        if channelIdx < 1 || channelIdx > nRows
+            skippedChannels(end+1) = channelIdx; %#ok<AGROW>
+            continue;
+        end
+
+        cfg = normalizeChannelFeatureConfig(chPack);
+        [cfg, compatReport] = sanitizeChannelFeatureConfig(cfg, handles.loadedParams, channelIdx);
+        handles = setChannelFeatureConfig(handles, channelIdx, cfg);
+        appliedChannels(end+1) = channelIdx; %#ok<AGROW>
+        totalBase = totalBase + numel(cfg.selectedFeatures);
+        totalCustom = totalCustom + numel(cfg.customExpressions);
+
+        if ~isempty(compatReport.droppedBase)
+            totalDroppedBase = totalDroppedBase + numel(compatReport.droppedBase);
+            compatLogLines{end+1} = sprintf('[Channel %d] Expression pack dropped incompatible base feature(s): %s', ... %#ok<AGROW>
+                channelIdx, strjoin(compatReport.droppedBase, ', '));
+        end
+        if ~isempty(compatReport.droppedCustom)
+            totalDroppedCustom = totalDroppedCustom + numel(compatReport.droppedCustom);
+            compatLogLines{end+1} = sprintf('[Channel %d] Expression pack dropped incompatible custom expression(s): %s', ... %#ok<AGROW>
+                channelIdx, strjoin(compatReport.droppedCustom, ', '));
+        end
+    end
+
+    if isempty(appliedChannels)
+        msg = sprintf(['Expression pack loaded (%s), but no channels matched this UI.\n' ...
+            'Detected channels in UI: 1..%d'], file, nRows);
+        uialert(fig, msg, 'No Matching Channels');
+        appendTrainLog(fig, sprintf('Loaded expression pack: %s (no matching channels).', file));
+        if ~isempty(skippedChannels)
+            appendTrainLog(fig, sprintf('Skipped channel indices: %s', formatChannelIndexList(skippedChannels)));
+        end
+        return;
+    end
+
+    guidata(fig, handles);
+    refreshTrainingFeatureSummary(fig);
+    appendTrainLog(fig, sprintf('Loaded expression pack: %s', file));
+    appendTrainLog(fig, sprintf(['Applied expression pack to channel(s): %s ' ...
+        '(total base features=%d, total custom expressions=%d).'], ...
+        formatChannelIndexList(appliedChannels), totalBase, totalCustom));
+    for i = 1:numel(compatLogLines)
+        appendTrainLog(fig, compatLogLines{i});
+    end
+    if totalDroppedBase > 0 || totalDroppedCustom > 0
+        appendTrainLog(fig, sprintf('Expression-pack compatibility pruning: dropped base=%d, dropped custom=%d.', ...
+            totalDroppedBase, totalDroppedCustom));
+    end
+    if ~isempty(skippedChannels)
+        appendTrainLog(fig, sprintf('Skipped channel indices (not present in this UI): %s', ...
+            formatChannelIndexList(skippedChannels)));
+    end
+end
+
+function channelIdx = inferPackChannelIndex(chPack, fallbackIdx)
+    channelIdx = nan;
+    if nargin < 2 || isempty(fallbackIdx)
+        fallbackIdx = 1;
+    end
+    if ~isstruct(chPack)
+        return;
+    end
+
+    if isfield(chPack, 'channelIdx')
+        channelIdx = normalizeScalarNumeric(chPack.channelIdx, nan);
+    elseif isfield(chPack, 'channel')
+        channelIdx = normalizeScalarNumeric(chPack.channel, nan);
+    end
+
+    if ~isfinite(channelIdx)
+        channelIdx = fallbackIdx;
+    end
+end
+
+function txt = formatChannelIndexList(indices)
+    vals = unique(round(indices(:)'));
+    vals = vals(isfinite(vals));
+    if isempty(vals)
+        txt = 'none';
+        return;
+    end
+    pieces = arrayfun(@(v) sprintf('%d', v), vals, 'UniformOutput', false);
+    txt = strjoin(pieces, ', ');
+end
+
+function [pack, errMsg] = loadExpressionPackForTraining(packPath)
+    pack = struct();
+    errMsg = '';
+
+    if ~(ischar(packPath) || isstring(packPath))
+        errMsg = 'Expression pack path must be char or string.';
+        return;
+    end
+    packPath = char(string(packPath));
+
+    if exist(packPath, 'file') ~= 2
+        errMsg = sprintf('Expression pack file not found:\n%s', packPath);
+        return;
+    end
+
+    try
+        raw = load(packPath);
+    catch ME
+        errMsg = sprintf('Failed to load expression pack file:\n%s', ME.message);
+        return;
+    end
+
+    candidates = {};
+    if isfield(raw, 'expressionPack')
+        candidates{end+1} = raw.expressionPack; %#ok<AGROW>
+    end
+    if isfield(raw, 'pack')
+        candidates{end+1} = raw.pack; %#ok<AGROW>
+    end
+
+    rawFields = fieldnames(raw);
+    for i = 1:numel(rawFields)
+        value = raw.(rawFields{i});
+        if isstruct(value) && isfield(value, 'channelPacks')
+            candidates{end+1} = value; %#ok<AGROW>
+        end
+    end
+
+    for i = 1:numel(candidates)
+        candidate = candidates{i};
+        if numel(candidate) > 1
+            candidate = candidate(1);
+        end
+        if isValidExpressionPackStruct(candidate)
+            pack = candidate;
+            return;
+        end
+    end
+
+    errMsg = sprintf(['File does not contain a valid expression pack.\n' ...
+        'Expected a struct with field "channelPacks" and per-channel entries ', ...
+        'containing selectedFeatures/customExpressions.\n\nFile: %s'], packPath);
+end
+
+function tf = isValidExpressionPackStruct(pack)
+    tf = false;
+    if ~isstruct(pack) || ~isscalar(pack) || ~isfield(pack, 'channelPacks')
+        return;
+    end
+
+    cps = pack.channelPacks;
+    if isempty(cps) || ~isstruct(cps)
+        return;
+    end
+
+    hasSelected = isfield(cps, 'selectedFeatures');
+    hasCustom = isfield(cps, 'customExpressions');
+    tf = any(hasSelected | hasCustom);
+end
+
 function refreshTrainingFeatureSummary(fig, contextChannel)
     handles = guidata(fig);
     if ~isfield(handles, 'featureCountLabel') || ~isgraphics(handles.featureCountLabel) || ...
@@ -1032,6 +1276,79 @@ function [isValid, errMsg] = validateTrainingFeatureSelection(handles, channels)
         isValid = false;
         errMsg = strjoin(problems, newline);
     end
+end
+
+function [cfgOut, report] = sanitizeChannelFeatureConfig(cfgIn, params, channelIdx)
+    cfgOut = normalizeChannelFeatureConfig(cfgIn);
+    report = struct( ...
+        'droppedBase', {{}}, ...
+        'droppedCustom', {{}}, ...
+        'fittingMethod', '3D Gaussian', ...
+        'has3D', true);
+
+    if nargin < 2 || ~isstruct(params) || isempty(fieldnames(params))
+        return;
+    end
+    if nargin < 3 || ~isfinite(channelIdx) || channelIdx < 1
+        channelIdx = 1;
+    end
+
+    [fittingMethod, has3D] = inferChannelTrainingContext(params, channelIdx);
+    if isempty(fittingMethod)
+        fittingMethod = '3D Gaussian';
+    end
+    if isempty(has3D)
+        has3D = true;
+    end
+    report.fittingMethod = char(string(fittingMethod));
+    report.has3D = logical(has3D);
+
+    [~, featureInfo] = snap_helpers.classification.getAvailableFeatures( ...
+        report.fittingMethod, report.has3D, false);
+    available = fieldnames(featureInfo);
+
+    if ~isempty(cfgOut.selectedFeatures)
+        selected = cfgOut.selectedFeatures(:)';
+        keepMask = ismember(selected, available);
+        report.droppedBase = selected(~keepMask);
+        cfgOut.selectedFeatures = selected(keepMask);
+    end
+
+    if ~isempty(cfgOut.customExpressions)
+        [cfgOut.customExpressions, report.droppedCustom] = ...
+            filterCompatibleCustomExpressions(cfgOut.customExpressions, available);
+    end
+end
+
+function [customOut, droppedNames] = filterCompatibleCustomExpressions(customIn, availableFeatures)
+    customOut = normalizeCustomExpressionList(customIn);
+    droppedNames = {};
+
+    if isempty(customOut)
+        return;
+    end
+
+    dummyData = buildDummyFeatureStructForValidation(availableFeatures);
+    keepMask = false(1, numel(customOut));
+    warnState = warning('query', 'all');
+    warning('off', 'all');
+    warnCleanup = onCleanup(@() warning(warnState));
+    for e = 1:numel(customOut)
+        exprName = char(string(customOut(e).name));
+        exprText = char(string(customOut(e).expression));
+        try
+            result = snap_helpers.classification.evaluateExpression(exprText, dummyData, availableFeatures);
+            keepMask(e) = ~isempty(result) && any(isfinite(result));
+        catch
+            keepMask(e) = false;
+        end
+        if ~keepMask(e)
+            droppedNames{end+1} = exprName; %#ok<AGROW>
+        end
+    end
+    clear warnCleanup;
+
+    customOut = customOut(keepMask);
 end
 
 function data = buildDummyFeatureStructForValidation(featureNames)
@@ -1176,8 +1493,8 @@ function onTrainSelectedChannels(fig)
 
     [featureSelectionOk, featureSelectionErr] = validateTrainingFeatureSelection(handles, [channelConfigs.channel]);
     if ~featureSelectionOk
-        uialert(fig, featureSelectionErr, 'Feature Selection Incompatible');
-        return;
+        appendTrainLog(fig, sprintf(['Feature compatibility warning before training: %s ' ...
+            '(incompatible selections will be pruned automatically).'], featureSelectionErr));
     end
 
     try
@@ -1248,6 +1565,17 @@ function onTrainSelectedChannels(fig)
         logDiscoveredPairs(fig, ch, 'train', trainExports, trainLabels, 4);
 
         chFeatureCfg = getChannelFeatureConfig(handles, ch);
+        [chFeatureCfg, compatReport] = sanitizeChannelFeatureConfig(chFeatureCfg, handles.loadedParams, ch);
+        if ~isempty(compatReport.droppedBase)
+            appendTrainLog(fig, sprintf('[Channel %d] Auto-dropped incompatible base feature(s): %s', ...
+                ch, strjoin(compatReport.droppedBase, ', ')));
+        end
+        if ~isempty(compatReport.droppedCustom)
+            appendTrainLog(fig, sprintf('[Channel %d] Auto-dropped incompatible custom expression(s): %s', ...
+                ch, strjoin(compatReport.droppedCustom, ', ')));
+        end
+        handles = setChannelFeatureConfig(handles, ch, chFeatureCfg);
+        guidata(fig, handles);
         if isempty(chFeatureCfg.selectedFeatures) && isempty(chFeatureCfg.customExpressions)
             appendTrainLog(fig, sprintf('[Channel %d] Features: AUTO (all non-position base features), custom expressions: none.', ch));
         else
@@ -2639,6 +2967,12 @@ function combos = buildSweepCombinations(cfg)
 end
 
 function [metrics, cm] = evaluateOnValidation(model, normParams, XVal, yVal)
+    if isempty(XVal) || isempty(yVal)
+        cm = zeros(2, 2);
+        metrics = struct('accuracy', NaN, 'precisionReal', NaN, 'recallReal', NaN, 'f1Real', NaN);
+        return;
+    end
+
     XNorm = XVal;
     if isfield(normParams, 'standardized') && normParams.standardized
         XNorm = (XVal - normParams.mu) ./ normParams.sigma;
@@ -3239,6 +3573,191 @@ function selected = normalizeSelectedFeatures(selectedInput, featureInfo)
         else
             selected = selectedInput;
         end
+    end
+end
+
+function customExpressions = normalizeCustomExpressionList(customExpressionsInput)
+    customExpressions = struct('name', {}, 'expression', {});
+    if isempty(customExpressionsInput)
+        return;
+    end
+    if ~isstruct(customExpressionsInput)
+        return;
+    end
+
+    ce = customExpressionsInput(:);
+    keepMask = false(size(ce));
+    for i = 1:numel(ce)
+        if ~isfield(ce(i), 'name') || ~isfield(ce(i), 'expression')
+            continue;
+        end
+        name = strtrim(char(string(ce(i).name)));
+        expr = strtrim(char(string(ce(i).expression)));
+        if isempty(name) || isempty(expr)
+            continue;
+        end
+        ce(i).name = name;
+        ce(i).expression = expr;
+        keepMask(i) = true;
+    end
+    ce = ce(keepMask);
+    if isempty(ce)
+        return;
+    end
+
+    seenNames = strings(0, 1);
+    out = struct('name', {}, 'expression', {});
+    for i = 1:numel(ce)
+        exprName = string(ce(i).name);
+        if any(exprName == seenNames)
+            continue;
+        end
+        out(end+1) = struct('name', ce(i).name, 'expression', ce(i).expression); %#ok<AGROW>
+        seenNames(end+1, 1) = exprName; %#ok<AGROW>
+    end
+    customExpressions = out;
+end
+
+function [X, featureNames, validMask, extractionInfo, selectedFeatures, customExpressions] = ...
+        buildTrainingFeatureMatrixWithFallback(fitData, selectedFeatures, featureInfo, customExpressions, progressCb)
+    maxPasses = max(6, numel(selectedFeatures) + numel(customExpressions) + 2);
+    selectedFeatures = selectedFeatures(:)';
+    customExpressions = normalizeCustomExpressionList(customExpressions);
+
+    X = [];
+    featureNames = {};
+    validMask = [];
+    extractionInfo = struct();
+
+    for pass = 1:maxPasses
+        [X, featureNames, validMask, extractionInfo] = snap_helpers.classification.buildFeatureMatrix( ...
+            fitData, selectedFeatures, featureInfo, customExpressions);
+        emitProgress(progressCb, 'Training feature matrix built: %d candidate rows, %d feature columns.', ...
+            size(X, 1), size(X, 2));
+
+        allNaNFeatures = {};
+        if isstruct(extractionInfo) && isfield(extractionInfo, 'featuresAllNaN') && ~isempty(extractionInfo.featuresAllNaN)
+            allNaNFeatures = extractionInfo.featuresAllNaN;
+            emitProgress(progressCb, 'Training feature extraction all-NaN feature(s): %s', ...
+                strjoin(allNaNFeatures, ', '));
+        end
+
+        if isempty(allNaNFeatures) && any(validMask)
+            return;
+        end
+
+        if ~isempty(allNaNFeatures)
+            dropNames = allNaNFeatures;
+            dropReason = 'all-NaN';
+        else
+            [dropNames, dropReason] = chooseFallbackDropFeatures(extractionInfo, featureNames, size(X, 1));
+        end
+
+        if isempty(dropNames)
+            return;
+        end
+
+        [nextSelected, nextCustom, droppedBase, droppedCustom] = ...
+            dropSelectedFeaturesByName(selectedFeatures, customExpressions, dropNames);
+
+        if isempty(droppedBase) && isempty(droppedCustom)
+            return;
+        end
+
+        if ~isempty(droppedBase)
+            emitProgress(progressCb, 'Dropping %s base feature(s): %s', dropReason, strjoin(droppedBase, ', '));
+        end
+        if ~isempty(droppedCustom)
+            emitProgress(progressCb, 'Dropping %s custom expression(s): %s', dropReason, strjoin(droppedCustom, ', '));
+        end
+
+        selectedFeatures = nextSelected;
+        customExpressions = nextCustom;
+
+        if isempty(selectedFeatures) && isempty(customExpressions)
+            emitProgress(progressCb, 'All selected features were incompatible. Falling back to AUTO base features.');
+            selectedFeatures = normalizeSelectedFeatures({}, featureInfo);
+        end
+
+        emitProgress(progressCb, 'Rebuilding training feature matrix after compatibility pruning (pass %d/%d)...', ...
+            min(pass + 1, maxPasses), maxPasses);
+    end
+end
+
+function [selectedOut, customOut, droppedBase, droppedCustom] = ...
+        dropSelectedFeaturesByName(selectedIn, customIn, featureNamesToDrop)
+    selectedOut = selectedIn(:)';
+    customOut = normalizeCustomExpressionList(customIn);
+    droppedBase = {};
+    droppedCustom = {};
+
+    if isempty(featureNamesToDrop)
+        return;
+    end
+
+    badSet = string(featureNamesToDrop(:)');
+
+    if ~isempty(selectedOut)
+        selStr = string(selectedOut);
+        dropMask = ismember(selStr, badSet);
+        droppedBase = cellstr(selStr(dropMask));
+        selectedOut = selectedOut(~dropMask);
+    end
+
+    if isempty(customOut)
+        return;
+    end
+
+    customNames = strings(1, numel(customOut));
+    for i = 1:numel(customOut)
+        customNames(i) = string(customOut(i).name);
+    end
+    dropMask = ismember(customNames, badSet);
+    if any(dropMask)
+        droppedCustom = cellstr(customNames(dropMask));
+        customOut = customOut(~dropMask);
+    end
+end
+
+function [dropNames, reason] = chooseFallbackDropFeatures(extractionInfo, featureNames, nRows)
+    dropNames = {};
+    reason = 'incompatible';
+
+    if nargin < 3 || ~isfinite(nRows) || nRows <= 0
+        nRows = 0;
+    end
+    if ~isstruct(extractionInfo) || ~isfield(extractionInfo, 'nanCountByFeature')
+        return;
+    end
+
+    nanCounts = extractionInfo.nanCountByFeature;
+    if isempty(nanCounts)
+        return;
+    end
+    nanCounts = nanCounts(:)';
+
+    names = featureNames;
+    if isempty(names) && isfield(extractionInfo, 'featureNames')
+        names = extractionInfo.featureNames;
+    end
+    if isempty(names) || numel(names) ~= numel(nanCounts)
+        return;
+    end
+
+    hasNaNMask = nanCounts > 0;
+    if ~any(hasNaNMask)
+        return;
+    end
+
+    idxCandidates = find(hasNaNMask);
+    [maxNaN, relIdx] = max(nanCounts(idxCandidates));
+    worstIdx = idxCandidates(relIdx);
+    dropNames = {names{worstIdx}};
+
+    if nRows > 0
+        reason = sprintf('highest-NaN (%d/%d rows)', maxNaN, nRows);
+    else
+        reason = sprintf('highest-NaN (%d rows)', maxNaN);
     end
 end
 

@@ -48,7 +48,23 @@ Or run:
 pack = create_example_expression_pack('svm_parameters.mat');
 ```
 
-For `SNAP_train` UI usage, pick each channel and open **Select Features...**, then copy in that channel’s `selectedFeatures` + `customExpressions` from the saved pack.
+Important:
+- `'/ABSOLUTE/PATH/to/...'` is placeholder text and will fail if copied literally.
+- Use real absolute paths if you are not running from the SNAP repo root, for example:
+
+```matlab
+pack = create_example_expression_pack( ...
+    '/path/to/SNAP/svm_parameters.mat', ...
+    '/path/to/SNAP/examples/svm_feature_pack/snap_svm_expression_pack.mat');
+```
+
+For `SNAP_train` UI usage, load your parameter file, then click **Load Expression Pack...** to apply channel-matched `selectedFeatures` + `customExpressions` directly from the saved pack.
+
+Compatibility behavior in `SNAP_train`:
+- The loaded pack is checked per-channel against inferred fitting context.
+- Incompatible base features/custom expressions are dropped automatically and reported in the training log.
+- During training, all-NaN features are automatically pruned and feature extraction is retried.
+- If an entire channel feature set becomes incompatible, `SNAP_train` falls back to AUTO base features.
 
 ## Advanced Optional Features (Model Stats)
 
@@ -60,6 +76,28 @@ If you have fit results containing `rawDataWindow` (from fitting output or expor
 ```
 
 Then include these added fields as **base selected features** in programmatic training workflows.
+
+## Creating Your Own Pack (From Scratch)
+
+Minimum required structure:
+
+```matlab
+pack = struct();
+pack.name = 'My pack';
+pack.version = '1.0.0';
+pack.channelPacks = struct( ...
+    'channelIdx', {1}, ...
+    'selectedFeatures', {{'amplitude', 'background', 'r_squared'}}, ...
+    'customExpressions', struct('name', {'snr_like'}, 'expression', {'integrated_intensity / background'}));
+```
+
+Save with:
+
+```matlab
+snap_contrib.svm.saveExpressionPack(pack, 'my_expression_pack.mat');
+```
+
+Then load in `SNAP_train` with **Load Expression Pack...**.
 
 ## Compartmentalized Extension Path
 

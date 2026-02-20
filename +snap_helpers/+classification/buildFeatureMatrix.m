@@ -33,7 +33,7 @@ function [X, featureNames, validMask, extractionInfo] = buildFeatureMatrix(fitRe
     if nargin < 4
         customExpressions = struct('name', {}, 'expression', {});
     end
-    
+
     % Initialize outputs
     extractionInfo = struct();
     extractionInfo.warnings = {};
@@ -165,9 +165,28 @@ function [X, featureNames, validMask, extractionInfo] = buildFeatureMatrix(fitRe
         end
     end
     
+    % Feature-level NaN diagnostics (helps identify incompatible selections)
+    if ~isempty(X)
+        nanCountByFeature = sum(isnan(X), 1);
+    else
+        nanCountByFeature = zeros(1, nTotalFeatures);
+    end
+    extractionInfo.nanCountByFeature = nanCountByFeature;
+    extractionInfo.featureNames = featureNames;
+    extractionInfo.featuresAllNaN = featureNames(nanCountByFeature == nSpots);
+    extractionInfo.featuresWithAnyNaN = featureNames(nanCountByFeature > 0);
+
+    if ~isempty(extractionInfo.featuresAllNaN)
+        for i = 1:numel(extractionInfo.featuresAllNaN)
+            extractionInfo.warnings{end+1} = sprintf( ...
+                'Feature "%s" is NaN for all %d samples', ...
+                extractionInfo.featuresAllNaN{i}, nSpots); %#ok<AGROW>
+        end
+    end
+
     % Identify valid rows (no NaN values across all selected features)
     validMask = all(~isnan(X), 2);
-    
+
     % Report statistics
     nInvalid = sum(~validMask);
     extractionInfo.nValid = sum(validMask);
@@ -283,6 +302,8 @@ function altNames = getAlternativeFieldNames(fname)
     switch lower(fname)
         case 'integrated_intensity'
             altNames = {'integratedIntensity', 'IntegratedIntensity', 'intensity'};
+        case 'background'
+            altNames = {'background_value', 'backgroundValue', 'bg'};
         case 'r_squared'
             altNames = {'rSquared', 'rsquared', 'R_squared', 'Rsquared'};
         case 'radial_symmetry_score'

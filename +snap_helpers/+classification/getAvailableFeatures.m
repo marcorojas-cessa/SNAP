@@ -268,24 +268,35 @@ end
 function result = computeSNR(data)
     try
         if istable(data)
-            ii = data.integratedIntensity;
-            bg = data.background;
-        elseif isstruct(data)
-            if isfield(data, 'integratedIntensity')
-                ii = [data.integratedIntensity]';
-            elseif isfield(data, 'integrated_intensity')
-                ii = [data.integrated_intensity]';
-            else
-                ii = NaN;
+            [ii, okII] = getTableColumnByAliases(data, {'integrated_intensity', 'integratedIntensity', 'intensity'});
+            [bg, okBg] = getTableColumnByAliases(data, {'background', 'bg'});
+            if ~(okII && okBg)
+                result = nan(height(data), 1);
+                return;
             end
-            bg = [data.background]';
+        elseif isstruct(data)
+            [ii, okII] = getStructColumnByAliases(data, {'integrated_intensity', 'integratedIntensity', 'intensity'});
+            [bg, okBg] = getStructColumnByAliases(data, {'background', 'bg'});
+            if ~(okII && okBg)
+                result = nan(numel(data), 1);
+                return;
+            end
         else
             result = NaN;
             return;
         end
+
+        ii = ii(:);
+        bg = bg(:);
         result = ii ./ max(bg, 1);
     catch
-        result = NaN;
+        if istable(data)
+            result = nan(height(data), 1);
+        elseif isstruct(data)
+            result = nan(numel(data), 1);
+        else
+            result = NaN;
+        end
     end
 end
 
@@ -401,3 +412,34 @@ function result = computeSigmaZRatio(data)
     end
 end
 
+function [values, ok] = getTableColumnByAliases(tbl, aliases)
+    values = [];
+    ok = false;
+    if ~istable(tbl)
+        return;
+    end
+    for i = 1:numel(aliases)
+        name = aliases{i};
+        if ismember(name, tbl.Properties.VariableNames)
+            values = tbl.(name);
+            ok = true;
+            return;
+        end
+    end
+end
+
+function [values, ok] = getStructColumnByAliases(s, aliases)
+    values = [];
+    ok = false;
+    if ~isstruct(s) || isempty(s)
+        return;
+    end
+    for i = 1:numel(aliases)
+        name = aliases{i};
+        if isfield(s, name)
+            values = [s.(name)]';
+            ok = true;
+            return;
+        end
+    end
+end
