@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a feature for SNAP core or contribution surfaces.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Proposed scope
+      options:
+        - Core SNAP behavior
+        - Contribution/add-on (non-core)
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What limitation or pain point are you solving?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe expected behavior and user workflow.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scientific_rationale
+    attributes:
+      label: Scientific rationale
+      description: Why this improves quantitative image-analysis reliability/interpretability.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

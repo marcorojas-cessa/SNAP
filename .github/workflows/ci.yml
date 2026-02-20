@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  matlab-smoke:
+    name: MATLAB Smoke Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MATLAB
+        uses: matlab-actions/setup-matlab@v2
+
+      - name: Validate entry points and critical modules
+        uses: matlab-actions/run-command@v2
+        with:
+          command: |
+            restoredefaultpath;
+            addpath(genpath(pwd));
+
+            entryPoints = { ...
+              'SNAP', 'SNAP_batch', 'SNAP_prepare', ...
+              'SNAP_classify', 'SNAP_train', 'compareMaximaWithLabeled' ...
+            };
+            for i = 1:numel(entryPoints)
+                f = entryPoints{i};
+                assert(~isempty(which(f)), "Missing entry point: " + f);
+                fh = str2func(f); %#ok<NASGU>
+            end
+
+            criticalFns = { ...
+              'snap_helpers.exportChannelDataStandardized', ...
+              'snap_helpers.exportNucleiSignalDataStandardized', ...
+              'snap_helpers.computeSignalMeasurements', ...
+              'snap_helpers.classification.buildFeatureMatrix', ...
+              'snap_modules.signal.runPipeline' ...
+            };
+            for i = 1:numel(criticalFns)
+                f = criticalFns{i};
+                assert(~isempty(which(f)), "Missing core function: " + f);
+                fh = str2func(f); %#ok<NASGU>
+            end
+
+            disp('SNAP MATLAB smoke checks passed.');
+
+      - name: Run tests if present
+        uses: matlab-actions/run-command@v2
+        with:
+          command: |
+            if isfolder('tests')
+                results = runtests('tests', 'IncludeSubfolders', true);
+                assertSuccess(results);
+            else
+                disp('No tests/ directory found. Skipping runtests.');
+            end

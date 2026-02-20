@@ -1,0 +1,29 @@
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "SNAP.m"
+          - "SNAP_batch.m"
+          - "SNAP_prepare.m"
+          - "SNAP_classify.m"
+          - "SNAP_train.m"
+          - "+snap_helpers/**"
+          - "+snap_modules/**"
+
+contribution:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "+snap_contrib/**"
+          - "examples/**"
+          - "plugins/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - ".github/**/*.md"
+
+governance:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "README.md"

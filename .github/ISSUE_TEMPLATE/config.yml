@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: SNAP Discussions
+    url: https://github.com/marcorojas-cessa/SNAP/discussions
+    about: Use discussions for ideas, usage questions, and contribution brainstorming.

@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible SNAP bug or runtime error.
+title: "[Bug]: "
+labels: ["bug", "needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include enough detail to reproduce the issue exactly.
+
+  - type: input
+    id: snap_component
+    attributes:
+      label: Affected component
+      description: Which app/module is affected?
+      placeholder: SNAP / SNAP_batch / SNAP_prepare / SNAP_classify / SNAP_train
+    validations:
+      required: true
+
+  - type: input
+    id: matlab_version
+    attributes:
+      label: MATLAB version
+      placeholder: R2024a
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Step-by-step actions to reproduce.
+      placeholder: |
+        1. Open SNAP_train
+        2. Load parameter file ...
+        3. Click Train ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Error messages / logs
+      description: Paste full MATLAB command-window output if available.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: data_context
+    attributes:
+      label: Data context
+      description: Image dimensionality, channels used, and relevant parameter choices.
+      placeholder: 3D TIFF stack, 3 channels active, fitting enabled on channels 1-3, etc.
+    validations:
+      required: false

@@ -365,7 +365,56 @@ Exporter provider function returns a struct with:
 2. Default built-in behavior is preserved in `SNAP_batch`, `SNAP_prepare`, and `SNAP_train`.
 3. Output schemas remain stable unless intentionally versioned and documented.
 4. Progress callbacks never crash or block the pipeline.
-5. Existing `.mat` parameter files and existing classifiers remain loadable/usable.
+5. Current SNAP `.mat` parameter files and classifiers remain loadable/usable across SNAP apps.
+
+### Example Contribution: SVM Feature Pack
+
+An example, non-core contribution is included to demonstrate high-value SVM feature engineering and modular extensibility:
+
+- `+snap_contrib/+svm/buildExpressionPack.m`
+- `+snap_contrib/+svm/saveExpressionPack.m`
+- `+snap_contrib/+svm/augmentFitResultsWithModelStats.m`
+- `examples/svm_feature_pack/README.md`
+- `examples/svm_feature_pack/create_example_expression_pack.m`
+- `plugins/signal/template_signal_modelstats_plugin.m`
+
+This pack provides a literature-informed custom expression set and optional model-selection statistics (AIC/BIC and residual descriptors) for advanced programmatic workflows.
+
+#### How to use the custom pack
+
+1. Export fitted channel data from SNAP or SNAP_batch (MAT exports now include `signals(i).rawDataWindow` and fit-window metadata).
+2. Build and save a per-channel pack:
+   ```matlab
+   pack = snap_contrib.svm.buildExpressionPack('ParameterFile', 'svm_parameters.mat');
+   snap_contrib.svm.saveExpressionPack(pack, 'snap_svm_expression_pack.mat');
+   ```
+3. In `SNAP_train`, use **Select Features...** per channel and apply the corresponding feature/expression set from the saved pack.
+4. If you train programmatically, pass the channel-specific set into `SNAP_train(..., 'SelectedFeatures', ..., 'CustomExpressions', ...)`.
+
+#### How to keep contributions out of SNAP core on GitHub
+
+1. Keep core runtime in `+snap_helpers`, `+snap_modules`, and top-level app files (`SNAP.m`, `SNAP_batch.m`, `SNAP_prepare.m`, `SNAP_classify.m`, `SNAP_train.m`).
+2. Put optional community extensions under `+snap_contrib` and `examples`.
+3. Ensure core code does not hard-depend on `+snap_contrib`; contributions should be opt-in only.
+4. Require each contribution PR to include:
+   - A short README in its folder
+   - Example invocation
+   - Clear statement of required inputs/outputs and any added fields
+5. Use a `contribution` label in GitHub PRs so these remain visibly separate from core maintenance PRs.
+6. Any PR that touches core paths must carry the `core` label (enforced by workflow).
+
+#### GitHub mediation settings to enable in repo UI
+
+1. Protect `main` (Settings → Branches):
+   - Require pull request before merging
+   - Require approvals
+   - Require conversation resolution
+   - Disable direct pushes to `main`
+2. Mark these checks as required on `main`:
+   - `MATLAB Smoke Checks`
+   - `guard` (from `Contribution Scope Guard`)
+3. Keep CODEOWNERS enabled so core/contribution paths are auto-routed for review.
+4. Run `Sync Repository Labels` once (Actions tab) so template/labeler labels exist.
 
 ---
 
@@ -387,6 +436,12 @@ SNAP/
 │   ├── +signal/              # Shared signal pipeline runner + registry
 │   ├── +prepare/             # SNAP_prepare provider/exporter engines
 │   └── +plugins/             # Built-in module plugins
+│
+├── +snap_contrib/            # Example contributor extensions (non-core)
+│   └── +svm/                 # SVM feature/expression contribution package
+│
+├── examples/
+│   └── svm_feature_pack/     # Example usage/docs for SVM contribution
 │
 └── +snap_helpers/            # Core processing functions
     ├── createUI.m            # Build main GUI
@@ -619,6 +674,18 @@ The output classifier is saved in the same format as `SNAP_classify` export and 
 | `r_squared` or `radial_symmetry_score` | Method-dependent quality metric |
 | `integrated_intensity` | Total signal |
 | `background` | Local background estimate |
+
+### Signal Data (MAT)
+
+Channel and nuclei-signal MAT exports include all CSV-equivalent signal fields plus full fit-window context when fitting is available:
+- `rawDataWindow` (full local intensity window used for fitting)
+- `fitWindowDimensions`
+- `fitWindowOrigin`
+- `localMaximaInWindow`
+- `originalMaximaCoords`
+
+This enables advanced downstream feature engineering (for example AIC/BIC and residual-model statistics) directly from exported results.
+For large datasets, SNAP automatically falls back to MAT `-v7.3` when needed.
 
 ---
 

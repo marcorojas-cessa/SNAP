@@ -1,0 +1,56 @@
+name: Contribution proposal
+description: Propose a non-core algorithm/feature contribution for SNAP.
+title: "[Contribution]: "
+labels: ["contribution", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for add-ons that should live outside core runtime (for example under `+snap_contrib`, `examples`, or optional `plugins`).
+
+  - type: input
+    id: contribution_name
+    attributes:
+      label: Contribution name
+      placeholder: robust_snr_expression_pack
+    validations:
+      required: true
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Purpose
+      description: What does this add and for which workflow?
+    validations:
+      required: true
+
+  - type: textarea
+    id: io_contract
+    attributes:
+      label: Inputs/outputs contract
+      description: Expected inputs, produced outputs, and any added fields.
+      placeholder: |
+        Inputs: fitResults struct with ...
+        Outputs: augmented fitResults with fields ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: integration
+    attributes:
+      label: Integration plan (non-core)
+      description: Where will files live, and how users opt in.
+      placeholder: |
+        +snap_contrib/+svm/my_pack.m
+        examples/my_pack/README.md
+        Optional plugin template ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: How performance/correctness will be measured.
+    validations:
+      required: false

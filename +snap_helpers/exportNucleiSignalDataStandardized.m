@@ -126,8 +126,12 @@ matData.metadata.computation_id = computation_id;  % For consistency verificatio
 
 % Get number of channels
 num_channels = length(signalComposition.active_channels);
+includeRawFitWindowsDetected = localHasRawFitWindows(signalComposition);
+includeRawFitWindowsEffective = includeRawFitWindowsDetected;
 matData.metadata.num_channels = num_channels;
 matData.metadata.active_channels = signalComposition.active_channels;
+matData.metadata.include_raw_fit_windows = includeRawFitWindowsEffective;
+matData.metadata.raw_fit_window_field_name = 'rawDataWindow';
 
 % Build nuclei array with embedded signals
 % Pre-allocate struct array to avoid dissimilar structures error
@@ -214,9 +218,10 @@ for i = 1:nucleiData.num_nuclei
                 
                 if isfield(ch_data, 'signals') && ~isempty(ch_data.signals)
                     % Signals already have full data from getSignalsInNucleus!
-                    nuc.signals{ch_idx} = ch_data.signals;
-                    nuc.signal_counts(ch_idx) = length(ch_data.signals);
-                    total_signals = total_signals + length(ch_data.signals);
+                    chSignals = ch_data.signals;
+                    nuc.signals{ch_idx} = chSignals;
+                    nuc.signal_counts(ch_idx) = length(chSignals);
+                    total_signals = total_signals + length(chSignals);
                 else
                     nuc.signals{ch_idx} = [];
                     nuc.signal_counts(ch_idx) = 0;
@@ -243,7 +248,7 @@ matData.nuclei = nuclei_array;
 
 %% Save MATLAB file
 matFilename = [outputPath '.mat'];
-save(matFilename, '-struct', 'matData');
+localSaveStructMat(matFilename, matData);
 % MAT file saved silently
 
 %% Export SIMPLE CSV (one row per nucleus) - COMPLETE NUCLEUS DATA
@@ -453,6 +458,8 @@ fprintf(fid, 'Coordinates: maxima_x/y/z, fitted_x/y/z\n');
 fprintf(fid, 'Intensity: amplitude(s), integrated_intensity, background\n');
 fprintf(fid, 'Quality: r_squared or radial_symmetry_score\n');
 fprintf(fid, 'Shape: sigma_x/y/z, rho_xy/xz/yz (if distorted), alpha_x/y/z (if skewed)\n\n');
+fprintf(fid, 'MAT-only fit window fields: rawDataWindow, fitWindowDimensions, fitWindowOrigin, localMaximaInWindow\n');
+fprintf(fid, 'Include Raw Fit Windows In MAT Export: %s\n\n', localLogicalText(includeRawFitWindowsEffective));
 
 fprintf(fid, '--- Coordinate Convention ---\n');
 fprintf(fid, 'Convention: ARRAY (row, col, slice)\n');
@@ -468,4 +475,62 @@ fprintf(fid, '%s\n', datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
 
 fclose(fid);
     % Receipt saved silently
+end
+
+function tf = localHasRawFitWindows(signalComposition)
+tf = false;
+if isempty(signalComposition) || ~isfield(signalComposition, 'nuclei_data') || isempty(signalComposition.nuclei_data)
+    return;
+end
+if ~isfield(signalComposition, 'active_channels') || isempty(signalComposition.active_channels)
+    return;
+end
+
+for i = 1:numel(signalComposition.nuclei_data)
+    nucData = signalComposition.nuclei_data(i);
+    if ~isfield(nucData, 'channels') || ~isstruct(nucData.channels)
+        continue;
+    end
+    for chIdx = 1:numel(signalComposition.active_channels)
+        ch = signalComposition.active_channels(chIdx);
+        chField = sprintf('channel_%d', ch);
+        if ~isfield(nucData.channels, chField)
+            continue;
+        end
+        chData = nucData.channels.(chField);
+        if ~isfield(chData, 'signals') || isempty(chData.signals) || ~isstruct(chData.signals)
+            continue;
+        end
+        if isfield(chData.signals, 'rawDataWindow')
+            sampleSignals = chData.signals;
+            for s = 1:min(10, numel(sampleSignals))
+                if ~isempty(sampleSignals(s).rawDataWindow)
+                    tf = true;
+                    return;
+                end
+            end
+        end
+    end
+end
+end
+
+function textValue = localLogicalText(value)
+if value
+    textValue = 'true';
+else
+    textValue = 'false';
+end
+end
+
+function localSaveStructMat(matFilename, matData)
+try
+    save(matFilename, '-struct', 'matData');
+catch ME
+    if contains(lower(ME.message), '2gb') || contains(lower(ME.message), 'too large')
+        warning('MAT export exceeded default size limit, retrying with -v7.3: %s', matFilename);
+        save(matFilename, '-struct', 'matData', '-v7.3');
+    else
+        rethrow(ME);
+    end
+end
 end

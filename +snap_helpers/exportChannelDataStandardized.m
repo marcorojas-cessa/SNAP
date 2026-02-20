@@ -63,6 +63,8 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
 %   - All CSV fields
 %   - Background ROI information (bounds, width)
 %   - Background formula/coefficients (for polynomial/plane fitting)
+%   - Fit-window context for each signal (rawDataWindow, fitWindowDimensions,
+%     fitWindowOrigin, localMaximaInWindow, originalMaximaCoords)
 %   - Metadata on coordinate convention
 
     % Parse options
@@ -75,9 +77,9 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     if ~isfield(options, 'spacing')
         options.spacing = [];
     end
-    
     % Check if fitting was performed
     hasFitting = isfield(channelResults, 'fit_results') && ~isempty(channelResults.fit_results);
+    includeRawFitWindowsEffective = hasFitting;
     fitMethodForColumns = '';
     if isfield(fitParams, 'gaussFitMethod') && ~isempty(fitParams.gaussFitMethod)
         fitMethodForColumns = fitParams.gaussFitMethod;
@@ -111,6 +113,8 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     matData.metadata.image_name = imageName;
     matData.metadata.num_signals = numSignals;
     matData.metadata.fitting_performed = hasFitting;
+    matData.metadata.include_raw_fit_windows = includeRawFitWindowsEffective;
+    matData.metadata.raw_fit_window_field_name = 'rawDataWindow';
     
     % Store parameters
     matData.parameters.image_type = fitParams.imageType;
@@ -175,7 +179,12 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
                              'rho_yz', cell(numSignals, 1), ...
                              'alpha_x', cell(numSignals, 1), ...
                              'alpha_y', cell(numSignals, 1), ...
-                             'alpha_z', cell(numSignals, 1));
+                             'alpha_z', cell(numSignals, 1), ...
+                             'rawDataWindow', cell(numSignals, 1), ...
+                             'fitWindowDimensions', cell(numSignals, 1), ...
+                             'fitWindowOrigin', cell(numSignals, 1), ...
+                             'localMaximaInWindow', cell(numSignals, 1), ...
+                             'originalMaximaCoords', cell(numSignals, 1));
     
     for i = 1:numSignals
         % Initialize basic fields
@@ -190,6 +199,23 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
             % Fitted center (global coordinates, ARRAY CONVENTION)
             if isfield(fitRes, 'globalFitCenter') && ~isempty(fitRes.globalFitCenter)
                 matData.signals(i).fitted_coords = fitRes.globalFitCenter;
+            end
+            if includeRawFitWindowsEffective
+                if isfield(fitRes, 'rawDataWindow') && ~isempty(fitRes.rawDataWindow)
+                    matData.signals(i).rawDataWindow = fitRes.rawDataWindow;
+                end
+                if isfield(fitRes, 'fitWindowDimensions') && ~isempty(fitRes.fitWindowDimensions)
+                    matData.signals(i).fitWindowDimensions = fitRes.fitWindowDimensions;
+                end
+                if isfield(fitRes, 'fitWindowOrigin') && ~isempty(fitRes.fitWindowOrigin)
+                    matData.signals(i).fitWindowOrigin = fitRes.fitWindowOrigin;
+                end
+                if isfield(fitRes, 'localMaximaInWindow') && ~isempty(fitRes.localMaximaInWindow)
+                    matData.signals(i).localMaximaInWindow = fitRes.localMaximaInWindow;
+                end
+                if isfield(fitRes, 'originalMaximaCoords') && ~isempty(fitRes.originalMaximaCoords)
+                    matData.signals(i).originalMaximaCoords = fitRes.originalMaximaCoords;
+                end
             end
             
             % Amplitude (method-dependent)
@@ -311,8 +337,8 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     % Write header
     fprintf(fid, '%s\n', strjoin(header_cols, ','));
     
-    % Save MAT file
-    save(matFilename, '-struct', 'matData');
+    % Save MAT file (fallback to -v7.3 for large exports with raw fit windows)
+    localSaveStructMat(matFilename, matData);
     
     % Write data rows - Use include_flags from shared helper for consistency
     for i = 1:numSignals
@@ -438,6 +464,7 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
         if isfield(fitParams, 'gaussFitPolyDegree')
             fprintf(fid, 'Polynomial Degree: %d\n', fitParams.gaussFitPolyDegree);
         end
+        fprintf(fid, 'Include Raw Fit Windows In MAT Export: %s\n', localLogicalText(includeRawFitWindowsEffective));
         fprintf(fid, '\n');
     else
         fprintf(fid, '--- Fitting ---\n');
@@ -453,4 +480,25 @@ function exportChannelDataStandardized(outputPath, imageName, channelResults, fi
     
     fclose(fid);
     % Receipt and MAT saved silently
+end
+
+function textValue = localLogicalText(value)
+if value
+    textValue = 'true';
+else
+    textValue = 'false';
+end
+end
+
+function localSaveStructMat(matFilename, matData)
+    try
+        save(matFilename, '-struct', 'matData');
+    catch ME
+        if contains(lower(ME.message), '2gb') || contains(lower(ME.message), 'too large')
+            warning('MAT export exceeded default size limit, retrying with -v7.3: %s', matFilename);
+            save(matFilename, '-struct', 'matData', '-v7.3');
+        else
+            rethrow(ME);
+        end
+    end
 end

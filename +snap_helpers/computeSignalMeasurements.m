@@ -50,7 +50,6 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
 %   maximaCoords - Nx3 array of maxima coordinates [row, col, slice] ARRAY CONVENTION
 %   fitResults   - Array of fit result structs (optional, can be empty)
 %   fitMethod    - String describing fit method (used for field detection)
-%
 % OUTPUTS:
 %   signalData   - Struct array with one entry per signal, containing:
 %                  .signal_id
@@ -63,6 +62,7 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
 %                  .sigma_x/y/z (if Gaussian)
 %                  .rho_xy/xz/yz (if distorted/skewed)
 %                  .alpha_x/y/z (if skewed)
+%                  .rawDataWindow and fit-window metadata (if available)
 %   methodInfo   - Struct with boolean flags:
 %                  .hasFitting, .is1DFit, .is2DPlus1DFit
 %                  .isRadialSymmetry, .isSkewed, .isDistorted
@@ -109,6 +109,11 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
                         'amplitude_xy', cell(numSignals, 1), ...
                         'integrated_intensity', cell(numSignals, 1), ...
                         'background', cell(numSignals, 1), ...
+                        'background_method', cell(numSignals, 1), ...
+                        'background_coeffs', cell(numSignals, 1), ...
+                        'background_degree', cell(numSignals, 1), ...
+                        'background_roi_width', cell(numSignals, 1), ...
+                        'background_roi_bounds', cell(numSignals, 1), ...
                         'r_squared', cell(numSignals, 1), ...
                         'radial_symmetry_score', cell(numSignals, 1), ...
                         'sigma_x', cell(numSignals, 1), ...
@@ -119,7 +124,12 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
                         'rho_yz', cell(numSignals, 1), ...
                         'alpha_x', cell(numSignals, 1), ...
                         'alpha_y', cell(numSignals, 1), ...
-                        'alpha_z', cell(numSignals, 1));
+                        'alpha_z', cell(numSignals, 1), ...
+                        'rawDataWindow', cell(numSignals, 1), ...
+                        'fitWindowDimensions', cell(numSignals, 1), ...
+                        'fitWindowOrigin', cell(numSignals, 1), ...
+                        'localMaximaInWindow', cell(numSignals, 1), ...
+                        'originalMaximaCoords', cell(numSignals, 1));
     
     for i = 1:numSignals
         % Initialize all fields to proper values
@@ -133,6 +143,11 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
         signalData(i).amplitude_xy = NaN;
         signalData(i).integrated_intensity = NaN;
         signalData(i).background = NaN;
+        signalData(i).background_method = '';
+        signalData(i).background_coeffs = [];
+        signalData(i).background_degree = NaN;
+        signalData(i).background_roi_width = NaN;
+        signalData(i).background_roi_bounds = [];
         signalData(i).r_squared = NaN;
         signalData(i).radial_symmetry_score = NaN;
         signalData(i).sigma_x = NaN;
@@ -144,6 +159,11 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
         signalData(i).alpha_x = NaN;
         signalData(i).alpha_y = NaN;
         signalData(i).alpha_z = NaN;
+        signalData(i).rawDataWindow = [];
+        signalData(i).fitWindowDimensions = [];
+        signalData(i).fitWindowOrigin = [];
+        signalData(i).localMaximaInWindow = [];
+        signalData(i).originalMaximaCoords = maximaCoords(i, :);
         
         % Populate with fit data if available
         if hasFitting && i <= length(fitResults)
@@ -180,6 +200,21 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
             % Background
             if isfield(fitRes, 'background') && ~isnan(fitRes.background)
                 signalData(i).background = fitRes.background;
+            end
+            if isfield(fitRes, 'background_method') && ~isempty(fitRes.background_method)
+                signalData(i).background_method = fitRes.background_method;
+            end
+            if isfield(fitRes, 'background_coeffs') && ~isempty(fitRes.background_coeffs)
+                signalData(i).background_coeffs = fitRes.background_coeffs;
+            end
+            if isfield(fitRes, 'background_degree') && ~isnan(fitRes.background_degree)
+                signalData(i).background_degree = fitRes.background_degree;
+            end
+            if isfield(fitRes, 'background_roi_width') && ~isempty(fitRes.background_roi_width)
+                signalData(i).background_roi_width = fitRes.background_roi_width;
+            end
+            if isfield(fitRes, 'background_roi_bounds') && ~isempty(fitRes.background_roi_bounds)
+                signalData(i).background_roi_bounds = fitRes.background_roi_bounds;
             end
             
             % Quality metric (R-squared or radial symmetry score)
@@ -235,7 +270,22 @@ function [signalData, methodInfo] = computeSignalMeasurements(maximaCoords, fitR
                     signalData(i).alpha_z = fitRes.alpha_z;
                 end
             end
+
+            if isfield(fitRes, 'originalMaximaCoords') && ~isempty(fitRes.originalMaximaCoords)
+                signalData(i).originalMaximaCoords = fitRes.originalMaximaCoords;
+            end
+            if isfield(fitRes, 'rawDataWindow') && ~isempty(fitRes.rawDataWindow)
+                signalData(i).rawDataWindow = fitRes.rawDataWindow;
+            end
+            if isfield(fitRes, 'fitWindowDimensions') && ~isempty(fitRes.fitWindowDimensions)
+                signalData(i).fitWindowDimensions = fitRes.fitWindowDimensions;
+            end
+            if isfield(fitRes, 'fitWindowOrigin') && ~isempty(fitRes.fitWindowOrigin)
+                signalData(i).fitWindowOrigin = fitRes.fitWindowOrigin;
+            end
+            if isfield(fitRes, 'localMaximaInWindow') && ~isempty(fitRes.localMaximaInWindow)
+                signalData(i).localMaximaInWindow = fitRes.localMaximaInWindow;
+            end
         end
     end
 end
-

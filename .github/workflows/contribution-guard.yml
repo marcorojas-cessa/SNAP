@@ -1,0 +1,76 @@
+name: Contribution Scope Guard
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce contribution label scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.info("No PR payload found. Skipping.");
+              return;
+            }
+
+            const labels = (pr.labels || []).map(l => (l.name || "").toLowerCase());
+            const isContribution = labels.includes("contribution");
+            const isCore = labels.includes("core");
+            const failures = [];
+            if (!isContribution) {
+              core.info("PR is not labeled 'contribution'. Contribution overlap rule may not apply.");
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = pr.number;
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            );
+
+            const corePatterns = [
+              /^SNAP\.m$/,
+              /^SNAP_batch\.m$/,
+              /^SNAP_prepare\.m$/,
+              /^SNAP_classify\.m$/,
+              /^SNAP_train\.m$/,
+              /^\+snap_helpers\//,
+              /^\+snap_modules\//
+            ];
+
+            const touchedCore = files
+              .map(f => f.filename)
+              .filter(name => corePatterns.some(rx => rx.test(name)));
+
+            if (touchedCore.length > 0 && !isCore) {
+              failures.push(
+                "PR touches core paths but is missing required 'core' label:\n" +
+                touchedCore.map(f => `- ${f}`).join("\n") +
+                "\n\nAdd the 'core' label."
+              );
+            }
+
+            if (isContribution && touchedCore.length > 0) {
+              failures.push(
+                "PR labeled 'contribution' touches core paths:\n" +
+                touchedCore.map(f => `- ${f}`).join("\n") +
+                "\n\nRemove the 'contribution' label or move changes to non-core paths."
+              );
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(failures.join("\n\n"));
+              return;
+            }
+
+            core.info("Scope guard passed.");

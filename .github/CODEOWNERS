@@ -1,0 +1,23 @@
+# SNAP Code Ownership
+# Keep core review strict and contribution review visible.
+
+# Default owner
+* @marcorojas-cessa
+
+# Core runtime (strict review)
+/SNAP.m @marcorojas-cessa
+/SNAP_batch.m @marcorojas-cessa
+/SNAP_prepare.m @marcorojas-cessa
+/SNAP_classify.m @marcorojas-cessa
+/SNAP_train.m @marcorojas-cessa
+/+snap_helpers/ @marcorojas-cessa
+/+snap_modules/ @marcorojas-cessa
+
+# Contribution surfaces (community-extendable)
+/+snap_contrib/ @marcorojas-cessa
+/examples/ @marcorojas-cessa
+/plugins/ @marcorojas-cessa
+
+# Repository governance/docs
+/.github/ @marcorojas-cessa
+/README.md @marcorojas-cessa
