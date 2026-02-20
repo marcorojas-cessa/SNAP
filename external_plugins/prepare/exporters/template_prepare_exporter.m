@@ -4,7 +4,7 @@ function spec = template_prepare_exporter()
 % To activate:
 %   1) Copy/rename this file and function.
 %   2) Implement canExport/exportFcn.
-%   3) Place in plugins/prepare/exporters or SNAP_PREPARE_EXPORTER_PATH.
+%   3) Place in external_plugins/prepare/exporters or SNAP_EXTERNAL_PREPARE_EXPORTER_PATH.
 
     spec = struct();
     spec.id = 'external.example.prepare_exporter';

@@ -4,7 +4,7 @@ function spec = template_signal_plugin()
 % To activate this plugin:
 %   1) Copy this file and rename function/file to a unique name.
 %   2) Update id/stage/priority and implement the run callback.
-%   3) Place it in plugins/signal or a folder listed in SNAP_SIGNAL_PLUGIN_PATH.
+%   3) Place it in external_plugins/signal or a folder listed in SNAP_EXTERNAL_SIGNAL_PLUGIN_PATH.
 %
 % Stage options (built-in order):
 %   signal_processing, maxima_detection, gaussian_fitting,

@@ -94,9 +94,9 @@ function exporters = discoverExternalExporters(includeExternal, externalDirs)
 
     thisFile = mfilename('fullpath');
     repoRoot = fileparts(fileparts(fileparts(thisFile)));
-    dirs{end+1} = fullfile(repoRoot, 'plugins', 'prepare', 'exporters');
+    dirs{end+1} = fullfile(repoRoot, 'external_plugins', 'prepare', 'exporters');
 
-    envDirs = getenv('SNAP_PREPARE_EXPORTER_PATH');
+    envDirs = getenv('SNAP_EXTERNAL_PREPARE_EXPORTER_PATH');
     if ~isempty(envDirs)
         dirs = [dirs, strsplit(envDirs, pathsep)]; %#ok<AGROW>
     end

@@ -4,7 +4,7 @@ function spec = template_prepare_reader()
 % To activate:
 %   1) Copy/rename this file and function.
 %   2) Implement canRead/readFcn.
-%   3) Place in plugins/prepare/readers or SNAP_PREPARE_PROVIDER_PATH.
+%   3) Place in external_plugins/prepare/readers or SNAP_EXTERNAL_PREPARE_PROVIDER_PATH.
 
     spec = struct();
     spec.id = 'external.example.prepare_reader';

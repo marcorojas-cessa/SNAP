@@ -18,7 +18,7 @@ These are delivered as an example contribution and are not wired into core SNAP 
 - `+snap_contrib/+svm/saveExpressionPack.m`
 - `+snap_contrib/+svm/augmentFitResultsWithModelStats.m`
 - `examples/svm_feature_pack/create_example_expression_pack.m`
-- `plugins/signal/template_signal_modelstats_plugin.m`
+- `external_plugins/signal/template_signal_modelstats_plugin.m`
 
 ## Scientific Rationale
 
@@ -65,6 +65,6 @@ Then include these added fields as **base selected features** in programmatic tr
 
 An optional template plugin is provided at:
 
-- `plugins/signal/template_signal_modelstats_plugin.m`
+- `external_plugins/signal/template_signal_modelstats_plugin.m`
 
 It demonstrates how a contributor can wrap the built-in Gaussian fitting stage and append custom fit statistics using the modular signal pipeline architecture.

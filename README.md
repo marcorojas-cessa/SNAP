@@ -288,19 +288,23 @@ Built-ins wrap the established SNAP helper methods to preserve current behavior 
 ### External Extension Points
 
 - Signal plugins:
-  - `plugins/signal/`
-  - `SNAP_SIGNAL_PLUGIN_PATH` (path-separated directories)
+  - `external_plugins/signal/`
+  - `SNAP_EXTERNAL_SIGNAL_PLUGIN_PATH` (path-separated directories)
 - SNAP_prepare reader plugins:
-  - `plugins/prepare/readers/`
-  - `SNAP_PREPARE_PROVIDER_PATH`
+  - `external_plugins/prepare/readers/`
+  - `SNAP_EXTERNAL_PREPARE_PROVIDER_PATH`
 - SNAP_prepare exporter plugins:
-  - `plugins/prepare/exporters/`
-  - `SNAP_PREPARE_EXPORTER_PATH`
+  - `external_plugins/prepare/exporters/`
+  - `SNAP_EXTERNAL_PREPARE_EXPORTER_PATH`
+
+Naming is intentionally distinct:
+- Built-in runtime plugins live only under `+snap_modules/+plugins/...`
+- Community/external plugins live only under `external_plugins/...`
 
 Included templates:
-- `plugins/signal/template_signal_plugin.m`
-- `plugins/prepare/readers/template_prepare_reader.m`
-- `plugins/prepare/exporters/template_prepare_exporter.m`
+- `external_plugins/signal/template_signal_plugin.m`
+- `external_plugins/prepare/readers/template_prepare_reader.m`
+- `external_plugins/prepare/exporters/template_prepare_exporter.m`
 
 ### Collaboration Guide (In-Repo)
 
@@ -376,7 +380,7 @@ An example, non-core contribution is included to demonstrate high-value SVM feat
 - `+snap_contrib/+svm/augmentFitResultsWithModelStats.m`
 - `examples/svm_feature_pack/README.md`
 - `examples/svm_feature_pack/create_example_expression_pack.m`
-- `plugins/signal/template_signal_modelstats_plugin.m`
+- `external_plugins/signal/template_signal_modelstats_plugin.m`
 
 This pack provides a literature-informed custom expression set and optional model-selection statistics (AIC/BIC and residual descriptors) for advanced programmatic workflows.
 
@@ -394,7 +398,7 @@ This pack provides a literature-informed custom expression set and optional mode
 #### How to keep contributions out of SNAP core on GitHub
 
 1. Keep core runtime in `+snap_helpers`, `+snap_modules`, and top-level app files (`SNAP.m`, `SNAP_batch.m`, `SNAP_prepare.m`, `SNAP_classify.m`, `SNAP_train.m`).
-2. Put optional community extensions under `+snap_contrib` and `examples`.
+2. Put optional community extensions under `+snap_contrib`, `examples`, and `external_plugins`.
 3. Ensure core code does not hard-depend on `+snap_contrib`; contributions should be opt-in only.
 4. Require each contribution PR to include:
    - A short README in its folder
@@ -481,7 +485,7 @@ SNAP/
         ├── saveClassifier.m      # Save model + normalization
         └── loadClassifier.m      # Load trained classifier
 
-plugins/
+external_plugins/
 ├── signal/                   # External signal-stage plugins
 └── prepare/
     ├── readers/              # External library reader providers

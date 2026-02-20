@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this for add-ons that should live outside core runtime (for example under `+snap_contrib`, `examples`, or optional `plugins`).
+        Use this for add-ons that should live outside core runtime (for example under `+snap_contrib`, `examples`, or optional `external_plugins`).
 
   - type: input
     id: contribution_name

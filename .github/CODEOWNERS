@@ -16,7 +16,7 @@
 # Contribution surfaces (community-extendable)
 /+snap_contrib/ @marcorojas-cessa
 /examples/ @marcorojas-cessa
-/plugins/ @marcorojas-cessa
+/external_plugins/ @marcorojas-cessa
 
 # Repository governance/docs
 /.github/ @marcorojas-cessa

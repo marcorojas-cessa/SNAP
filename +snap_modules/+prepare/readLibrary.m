@@ -94,9 +94,9 @@ function providers = discoverExternalProviders(includeExternal, externalDirs)
 
     thisFile = mfilename('fullpath');
     repoRoot = fileparts(fileparts(fileparts(thisFile)));
-    dirs{end+1} = fullfile(repoRoot, 'plugins', 'prepare', 'readers');
+    dirs{end+1} = fullfile(repoRoot, 'external_plugins', 'prepare', 'readers');
 
-    envDirs = getenv('SNAP_PREPARE_PROVIDER_PATH');
+    envDirs = getenv('SNAP_EXTERNAL_PREPARE_PROVIDER_PATH');
     if ~isempty(envDirs)
         dirs = [dirs, strsplit(envDirs, pathsep)]; %#ok<AGROW>
     end

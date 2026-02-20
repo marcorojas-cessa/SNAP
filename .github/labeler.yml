@@ -14,7 +14,7 @@ contribution:
       - any-glob-to-any-file:
           - "+snap_contrib/**"
           - "examples/**"
-          - "plugins/**"
+          - "external_plugins/**"
 
 docs:
   - changed-files:

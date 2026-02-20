@@ -8,7 +8,7 @@ function spec = template_signal_modelstats_plugin()
 % To activate:
 %   1) Copy this file and rename both file + function.
 %   2) Keep stage='gaussian_fitting' and set priority > 100.
-%   3) Place the renamed file in plugins/signal or SNAP_SIGNAL_PLUGIN_PATH.
+%   3) Place the renamed file in external_plugins/signal or SNAP_EXTERNAL_SIGNAL_PLUGIN_PATH.
 
     spec = struct();
     spec.id = 'external.example.signal_modelstats';

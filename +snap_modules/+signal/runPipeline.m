@@ -361,9 +361,9 @@ function specs = discoverExternalPlugins(context)
 
     thisFile = mfilename('fullpath');
     repoRoot = fileparts(fileparts(fileparts(thisFile)));
-    pluginDirs{end+1} = fullfile(repoRoot, 'plugins', 'signal');
+    pluginDirs{end+1} = fullfile(repoRoot, 'external_plugins', 'signal');
 
-    envPath = getenv('SNAP_SIGNAL_PLUGIN_PATH');
+    envPath = getenv('SNAP_EXTERNAL_SIGNAL_PLUGIN_PATH');
     if ~isempty(envPath)
         envDirs = strsplit(envPath, pathsep);
         pluginDirs = [pluginDirs, envDirs]; %#ok<AGROW>

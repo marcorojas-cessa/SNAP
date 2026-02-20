@@ -4,7 +4,7 @@
 
 ## Scope
 - [ ] Core change (`SNAP*.m`, `+snap_helpers`, `+snap_modules`)
-- [ ] Contribution-only change (`+snap_contrib`, `examples`, `plugins`)
+- [ ] Contribution-only change (`+snap_contrib`, `examples`, `external_plugins`)
 - [ ] Documentation-only
 
 Label note:
