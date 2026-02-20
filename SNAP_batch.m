@@ -1927,7 +1927,9 @@ function createBatchGUI()
     classifierGrid.RowSpacing = 8;
     classifierGrid.ColumnSpacing = 10;
     
-    uilabel(classifierGrid, 'Text', 'Channel 1:', 'Layout', struct('Row', 1, 'Column', 1));
+    lblClassifier1 = uilabel(classifierGrid, 'Text', 'Channel 1:');
+    lblClassifier1.Layout.Row = 1;
+    lblClassifier1.Layout.Column = 1;
     handles.classifier1Edit = uieditfield(classifierGrid, 'Value', '', 'Editable', 'off', ...
         'Tooltip', 'Classifier for channel 1 (optional)');
     handles.classifier1Edit.Layout.Row = 1; handles.classifier1Edit.Layout.Column = 2;
@@ -1938,7 +1940,9 @@ function createBatchGUI()
         'ButtonPushedFcn', @(src,evt) clearClassifier(fig, 1));
     handles.classifier1ClearBtn.Layout.Row = 1; handles.classifier1ClearBtn.Layout.Column = 4;
     
-    uilabel(classifierGrid, 'Text', 'Channel 2:', 'Layout', struct('Row', 2, 'Column', 1));
+    lblClassifier2 = uilabel(classifierGrid, 'Text', 'Channel 2:');
+    lblClassifier2.Layout.Row = 2;
+    lblClassifier2.Layout.Column = 1;
     handles.classifier2Edit = uieditfield(classifierGrid, 'Value', '', 'Editable', 'off', ...
         'Tooltip', 'Classifier for channel 2 (optional)');
     handles.classifier2Edit.Layout.Row = 2; handles.classifier2Edit.Layout.Column = 2;
