@@ -706,26 +706,100 @@ function SNAP_classify()
             state.fittingMethod, state.has3D, false, state.selectedFeatures, state.customExpressions);
         
         if ~cancelled
+            [selected, customExpr, validationReport] = sanitizeClassifyFeatureSelection( ...
+                selected, customExpr, 'permissive');
+
+            if ~isempty(validationReport.errors)
+                uialert(fig, sprintf('Feature selection has compatibility issues:\n%s', ...
+                    strjoin(validationReport.errors, newline)), 'Feature Validation Error');
+                return;
+            end
+
+            if validationReport.nDroppedBase > 0 || validationReport.nDroppedCustom > 0
+                warnMsg = sprintf([ ...
+                    'Compatibility pruning applied to selected features:\n', ...
+                    'Dropped base=%d, dropped custom=%d'], ...
+                    validationReport.nDroppedBase, validationReport.nDroppedCustom);
+                uialert(fig, warnMsg, 'Feature Compatibility Notice', 'Icon', 'warning');
+            end
+
             state.selectedFeatures = selected;
             state.customExpressions = customExpr;
-            
-            % Count total features
-            nBase = numel(selected);
-            nCustom = numel(customExpr);
-            nTotal = nBase + nCustom;
-            
-            handles.featureCountLabel.Text = sprintf('%d base + %d custom = %d features', nBase, nCustom, nTotal);
-            handles.featureCountLabel.FontColor = [0.2 0.6 0.2];
-            
-            % Update feature list display
-            featureList = selected;
-            for i = 1:numel(customExpr)
-                featureList{end+1} = sprintf('[EXPR] %s = %s', customExpr(i).name, customExpr(i).expression);
-            end
-            handles.featureListArea.Value = featureList;
-            
+            updateFeatureSelectionDisplay();
             fig.UserData.state = state;
             checkTrainingEligibility();
+        end
+    end
+
+    function updateFeatureSelectionDisplay()
+        nBase = numel(state.selectedFeatures);
+        nCustom = numel(state.customExpressions);
+        nTotal = nBase + nCustom;
+
+        handles.featureCountLabel.Text = sprintf('%d base + %d custom = %d features', nBase, nCustom, nTotal);
+        if nTotal > 0
+            handles.featureCountLabel.FontColor = [0.2 0.6 0.2];
+        else
+            handles.featureCountLabel.FontColor = [0.5 0.5 0.5];
+        end
+
+        featureList = state.selectedFeatures;
+        for i = 1:nCustom
+            featureList{end+1} = sprintf('[EXPR] %s = %s', ... %#ok<AGROW>
+                state.customExpressions(i).name, state.customExpressions(i).expression);
+        end
+        if isempty(featureList)
+            featureList = {'(no features selected)'};
+        end
+        handles.featureListArea.Value = featureList;
+    end
+
+    function [selectedOut, customOut, validationReport] = sanitizeClassifyFeatureSelection(selectedIn, customIn, mode)
+        if nargin < 3 || isempty(mode)
+            mode = 'permissive';
+        end
+
+        selectedOut = selectedIn;
+        customOut = customIn;
+        validationReport = struct( ...
+            'success', true, ...
+            'errors', {{}}, ...
+            'warnings', {{}}, ...
+            'nDroppedBase', 0, ...
+            'nDroppedCustom', 0, ...
+            'nAutoGuarded', 0);
+
+        try
+            capability = snap_helpers.classification.resolveCapabilitiesFromContext( ...
+                state.fittingMethod, state.has3D, ...
+                'ChannelIndex', 1, ...
+                'HasPhysicalSpacing', false);
+
+            packIn = struct( ...
+                'specVersion', '2.0.0', ...
+                'packId', 'snap_classify_feature_selection', ...
+                'strictModeDefault', strcmpi(mode, 'strict'), ...
+                'channelPacks', struct( ...
+                    'channelIdx', 1, ...
+                    'selectedFeatures', {selectedIn}, ...
+                    'customExpressions', customIn, ...
+                    'requiredFeatures', {{}}, ...
+                    'requiredCapabilities', struct( ...
+                        'fittingMethod', capability.fittingMethod, ...
+                        'has3D', logical(capability.has3D), ...
+                        'hasPhysicalSpacing', false)));
+
+            [packOut, validationReport] = ...
+                snap_helpers.classification.validateExpressionPackAgainstCapabilities( ...
+                    packIn, capability, 'Mode', mode, 'AutoGuardUnsafeExpressions', true);
+
+            if ~isempty(packOut.channelPacks)
+                selectedOut = packOut.channelPacks(1).selectedFeatures;
+                customOut = packOut.channelPacks(1).customExpressions;
+            end
+        catch ME
+            validationReport.success = false;
+            validationReport.errors = {sprintf('Feature validation failed: %s', ME.message)};
         end
     end
     
@@ -1281,6 +1355,17 @@ function SNAP_classify()
             uialert(fig, 'Please select features first', 'No Features');
             return;
         end
+
+        [safeSelected, safeCustom, validationReport] = sanitizeClassifyFeatureSelection( ...
+            state.selectedFeatures, state.customExpressions, 'permissive');
+        if ~isempty(validationReport.errors)
+            uialert(fig, sprintf('Selected features are incompatible with this dataset:\n%s', ...
+                strjoin(validationReport.errors, newline)), 'Feature Validation Error');
+            return;
+        end
+        state.selectedFeatures = safeSelected;
+        state.customExpressions = safeCustom;
+        updateFeatureSelectionDisplay();
         
         if numel(state.labeledReal) < 5 || numel(state.labeledNoise) < 5
             uialert(fig, 'Need at least 5 labels per class', 'Insufficient Labels');
@@ -1407,16 +1492,19 @@ function SNAP_classify()
             if isfield(data, 'customExpressions')
                 state.customExpressions = data.customExpressions;
             end
-            
-            % Update feature display
-            nBase = numel(state.selectedFeatures);
-            nCustom = numel(state.customExpressions);
-            handles.featureCountLabel.Text = sprintf('%d base + %d custom', nBase, nCustom);
-            featureList = state.selectedFeatures;
-            for ii = 1:nCustom
-                featureList{end+1} = sprintf('[EXPR] %s', state.customExpressions(ii).name);
+
+            [state.selectedFeatures, state.customExpressions, validationReport] = ...
+                sanitizeClassifyFeatureSelection(state.selectedFeatures, state.customExpressions, 'permissive');
+            if ~isempty(validationReport.errors)
+                fprintf('Loaded feature set validation error(s): %s\n', ...
+                    strjoin(validationReport.errors, ' | '));
             end
-            handles.featureListArea.Value = featureList;
+            if validationReport.nDroppedBase > 0 || validationReport.nDroppedCustom > 0
+                fprintf(['Loaded feature set required compatibility pruning: ', ...
+                    'dropped base=%d, dropped custom=%d\\n'], ...
+                    validationReport.nDroppedBase, validationReport.nDroppedCustom);
+            end
+            updateFeatureSelectionDisplay();
             
             if isfield(data, 'classifier')
                 state.classifier = data.classifier;
@@ -1557,5 +1645,3 @@ function SNAP_classify()
         delete(fig);
     end
 end
-
-

@@ -1,108 +1,99 @@
-# SNAP Example Contribution: SVM Feature and Expression Pack
+# SNAP Example: SVM Expression Pack
 
-This folder contains an example contributor package for improving classifier robustness in spot/noise discrimination.
+This folder contains an example feature/expression pack for spot-vs-noise classification.
 
-## What This Adds
+## One Important Point
 
-- A **literature-informed expression pack** for `SNAP_train` / `SNAP_classify` workflows.
-- Optional **model-selection/statistical features** computed from each fit window:
-  - Gaussian-vs-flat AIC/BIC deltas
-  - Poisson NLL deltas
-  - Residual distribution descriptors (std, MAD, skewness, kurtosis, optional KS p-value)
+Building a pack does **not** train an SVM.
 
-These are delivered as an example contribution and are not wired into core SNAP UI logic by default.
+- Pack generation only defines which base features and custom expressions to use.
+- SVM training still happens in `SNAP_train`.
+
+## Channel Semantics
+
+- In `SNAP_train`, channel numbers are slot labels for bookkeeping.
+- Each SVM is trained independently per channel slot.
+- There is no cross-channel pooling during training.
+- If you want the same trained SVM on multiple channels, load/inject the same classifier file into each channel slot.
+
+## Quick Start
+
+1. Build a pack:
+```matlab
+pack = create_example_expression_pack('svm_parameters.mat');
+```
+
+2. Train:
+```matlab
+SNAP_train
+```
+
+3. In `SNAP_train`:
+- Load parameter file.
+- Click **Load Expression Pack...** and choose the generated pack `.mat`.
+- Configure training data for each channel slot.
+- Train selected channels.
+
+## `SelectionMode`
+
+Controls base-feature selection during pack generation.
+
+- `focused` (default): prioritized compact subset.
+- `all_non_position`: all non-position base features.
+
+Used in:
+- `snap_contrib.svm.buildExpressionPack(..., 'SelectionMode', ...)`
+- `create_example_expression_pack(..., 'SelectionMode', ...)`
+
+## `LintMode`
+
+Validation mode for pack compatibility checks.
+
+- It does **not** train SVMs.
+- It only validates/sanitizes pack contents.
+
+Modes:
+- `strict`: fail on incompatibilities.
+- `permissive`: drop incompatible entries with warnings (and optional `real(...)` safety guard).
+
+Used in:
+- `snap_contrib.svm.lintExpressionPack(..., 'Mode', ...)`
+- `create_example_expression_pack(..., 'LintMode', ...)`
+
+## Compatibility Behavior
+
+When a pack is loaded in `SNAP_train`:
+
+- schema is normalized
+- channel capability checks are run from the loaded parameter file
+- incompatible entries are pruned in permissive mode with log messages
+- expressions are stress-checked for numeric safety
 
 ## Files
 
 - `+snap_contrib/+svm/buildExpressionPack.m`
 - `+snap_contrib/+svm/saveExpressionPack.m`
+- `+snap_contrib/+svm/lintExpressionPack.m`
 - `+snap_contrib/+svm/augmentFitResultsWithModelStats.m`
 - `examples/svm_feature_pack/create_example_expression_pack.m`
-- `external_plugins/signal/template_signal_modelstats_plugin.m`
+- `examples/svm_feature_pack/snap_svm_expression_pack_expressions.csv`
 
-## Scientific Rationale
+## Optional Advanced Stats
 
-The expression set emphasizes:
-
-- Dynamic-range stabilization (`log10(...)`) for skewed fluorescence intensity distributions
-- Signal-vs-background normalization (SNR-like transforms)
-- Shape/compactness terms (`intensity / sigma-product`) as PSF-consistency proxies
-- Quality-coupled terms (`r_squared`-weighted intensity metrics)
-- Optional model-selection statistics (AIC/BIC, likelihood deltas) for distinguishing structured spot-like signal from local noise models
-
-These are broadly consistent with common practice in fluorescence spot detection and model-selection workflows.
-
-## Basic Usage
-
-```matlab
-% Build per-channel expression pack from parameter file
-pack = snap_contrib.svm.buildExpressionPack('ParameterFile', 'svm_parameters.mat');
-
-% Save MAT + CSV
-snap_contrib.svm.saveExpressionPack(pack, 'snap_svm_expression_pack.mat');
-```
-
-Or run:
-
-```matlab
-pack = create_example_expression_pack('svm_parameters.mat');
-```
-
-Important:
-- `'/ABSOLUTE/PATH/to/...'` is placeholder text and will fail if copied literally.
-- Use real absolute paths if you are not running from the SNAP repo root, for example:
-
-```matlab
-pack = create_example_expression_pack( ...
-    '/path/to/SNAP/svm_parameters.mat', ...
-    '/path/to/SNAP/examples/svm_feature_pack/snap_svm_expression_pack.mat');
-```
-
-For `SNAP_train` UI usage, load your parameter file, then click **Load Expression Pack...** to apply channel-matched `selectedFeatures` + `customExpressions` directly from the saved pack.
-
-Compatibility behavior in `SNAP_train`:
-- The loaded pack is checked per-channel against inferred fitting context.
-- Incompatible base features/custom expressions are dropped automatically and reported in the training log.
-- During training, all-NaN features are automatically pruned and feature extraction is retried.
-- If an entire channel feature set becomes incompatible, `SNAP_train` falls back to AUTO base features.
-
-## Advanced Optional Features (Model Stats)
-
-If you have fit results containing `rawDataWindow` (from fitting output or exported SNAP MAT `signals`), you can augment them:
+If fit results include raw fit windows, you can compute optional model-stat features:
 
 ```matlab
 [fitDataAug, summary] = snap_contrib.svm.augmentFitResultsWithModelStats(fitData, ...
-    'ComputeNormalityPValue', false, 'Verbose', true);
+    'ComputeNormalityPValue', false, ...
+    'Verbose', true);
 ```
 
-Then include these added fields as **base selected features** in programmatic training workflows.
+## Contributor Check
 
-## Creating Your Own Pack (From Scratch)
-
-Minimum required structure:
+Before sharing a pack:
 
 ```matlab
-pack = struct();
-pack.name = 'My pack';
-pack.version = '1.0.0';
-pack.channelPacks = struct( ...
-    'channelIdx', {1}, ...
-    'selectedFeatures', {{'amplitude', 'background', 'r_squared'}}, ...
-    'customExpressions', struct('name', {'snr_like'}, 'expression', {'integrated_intensity / background'}));
+report = snap_contrib.svm.lintExpressionPack('snap_svm_expression_pack.mat', ...
+    'ParameterFile', 'svm_parameters.mat', ...
+    'Mode', 'strict');
 ```
-
-Save with:
-
-```matlab
-snap_contrib.svm.saveExpressionPack(pack, 'my_expression_pack.mat');
-```
-
-Then load in `SNAP_train` with **Load Expression Pack...**.
-
-## Compartmentalized Extension Path
-
-An optional template plugin is provided at:
-
-- `external_plugins/signal/template_signal_modelstats_plugin.m`
-
-It demonstrates how a contributor can wrap the built-in Gaussian fitting stage and append custom fit statistics using the modular signal pipeline architecture.

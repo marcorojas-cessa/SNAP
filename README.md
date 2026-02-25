@@ -175,19 +175,26 @@ SNAP_train
 ```
 
 Capabilities:
-- reads parameter file to infer active channels and fitting context
-- trains one classifier per selected channel
+- reads parameter file to infer active channel slots and fitting context
+- trains one independent classifier per selected channel slot
 - per-channel training and validation directories
 - per-channel match distance
 - optional FIJI coordinate conversion per channel
 - manual hyperparameters or validation sweep optimization
 - channel-specific base features and custom expressions
+- feature picker includes `Custom Features (Derived)` (built-in computed features) separate from free-form `Custom Expressions`
 - `Load Expression Pack...` support for applying saved feature sets
+- guards against writing multiple selected channels to the same output classifier file
 
 Programmatic mode is also supported:
 ```matlab
 SNAP_train(exportFiles, labelFiles, '/path/to/classifier.mat', 'MatchDistance', 2);
 ```
+
+Important behavior:
+- channel indices are bookkeeping labels for slots; they are not pooled together during SVM fitting
+- each trained classifier is built from one channel slot only
+- if you want one trained classifier reused on multiple channels, load/inject the same classifier `.mat` into each channel slot in `SNAP` or `SNAP_batch`
 
 ## Input Conventions
 
@@ -277,20 +284,33 @@ This naming separation is intentional:
 SNAP includes an example contribution for expression-pack generation:
 - `+snap_contrib/+svm/`
 - `examples/svm_feature_pack/`
+- detailed user/contributor guide: `examples/svm_feature_pack/README.md`
 
 Build and save a pack:
 ```matlab
-pack = snap_contrib.svm.buildExpressionPack('ParameterFile', '/absolute/path/to/params.mat');
+pack = snap_contrib.svm.buildExpressionPack( ...
+    'ParameterFile', '/absolute/path/to/params.mat', ...
+    'SelectionMode', 'focused', ...
+    'IncludeAdvancedStatsFeatures', true);
 snap_contrib.svm.saveExpressionPack(pack, '/absolute/path/to/snap_svm_expression_pack.mat');
 ```
 
 Then in `SNAP_train`, use `Load Expression Pack...`.
 
-Compatibility guardrails in `SNAP_train`:
-- pack contents are validated against channel context
-- incompatible features/expressions are auto-pruned with log messages
-- all-NaN features are auto-dropped during feature-matrix build
-- if needed, training falls back to automatic non-position base features
+Simple rules:
+- pack generation configures features; it does not train SVMs
+- `SNAP_train` validates pack entries against the loaded parameter context
+- permissive mode prunes incompatible entries with warnings
+- strict mode is for contributor QA and CI checks
+
+Contributor lint command:
+```matlab
+report = snap_contrib.svm.lintExpressionPack('/absolute/path/to/pack.mat', ...
+    'ParameterFile', '/absolute/path/to/params.mat', ...
+    'Mode', 'strict');
+```
+
+For full details, see `examples/svm_feature_pack/README.md`.
 
 ## Contributing
 
@@ -303,7 +323,8 @@ Recommended process:
    - core changes in core paths only when necessary
    - optional methods in `external_plugins/`, `+snap_contrib/`, and `examples/`
 4. Include documentation and usage examples with your PR.
-5. Submit a PR using the repository template.
+5. For expression-pack contributions, pass `snap_contrib.svm.lintExpressionPack(..., 'Mode','strict')` before opening the PR.
+6. Submit a PR using the repository template.
 
 Repository governance aids are already included:
 - CODEOWNERS
@@ -320,6 +341,11 @@ Repository governance aids are already included:
 - Review selected features/custom expressions.
 - In `SNAP_train`, check log lines for auto-pruned incompatible features.
 - Verify label CSV columns and coordinate convention.
+
+### Expression pack fails strict validation or sweep setup
+- Run `snap_contrib.svm.lintExpressionPack(..., 'Mode','strict')` with the exact parameter file used in training.
+- Ensure each channel's required capabilities match parameter-driven fitting mode and dimensionality.
+- Guard custom expressions against invalid domains (for example non-positive log inputs or unstable divisors).
 
 ### Batch run finds no channels or nuclei
 - Confirm folder naming and channel mapping.

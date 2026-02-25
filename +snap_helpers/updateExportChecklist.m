@@ -1,6 +1,13 @@
 function updateExportChecklist(fig_handle)
 % Update the export checklist based on what data is loaded and processed
     handles = guidata(fig_handle);
+
+    if ~isfield(handles, 'exportVisibleSlots') || isempty(handles.exportVisibleSlots)
+        handles.exportVisibleSlots = 2;
+    end
+    if ~isfield(handles, 'exportNavState') || isempty(handles.exportNavState)
+        handles.exportNavState = 0;
+    end
     
     % Save current checkbox states before updating (to preserve user selections)
     previousChecked = false(1, length(handles.exportItemChecks));
@@ -152,4 +159,5 @@ function updateExportChecklist(fig_handle)
     handles.numExportItems = itemIdx - 1;
     
     guidata(fig_handle, handles);
+    snap_helpers.navigateExportOptions(fig_handle, 'refresh');
 end

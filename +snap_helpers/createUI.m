@@ -222,8 +222,8 @@ nucPathGrid.ColumnWidth = {'fit', '1x', 'fit', 'fit', 'fit'};
 labelFcn(nucPathGrid, 'Text', 'Nuclei Path:');
 handles.nucPathText = editFcn(nucPathGrid, 'Value', lastUsed.nucFilePath, 'Editable', 'off');
 handles.nucBrowseButton = buttonFcn(nucPathGrid, 'Text', 'Browse');
-handles.nucUpButton = buttonFcn(nucPathGrid, 'Text', '↑', 'FontSize', 16);
-handles.nucDownButton = buttonFcn(nucPathGrid, 'Text', '↓', 'FontSize', 16);
+handles.nucUpButton = buttonFcn(nucPathGrid, 'Text', 'Up', 'FontSize', 12);
+handles.nucDownButton = buttonFcn(nucPathGrid, 'Text', 'Down', 'FontSize', 12);
 
 % Set explicit column positions for navigation buttons
 handles.nucUpButton.Layout.Column = 4;
@@ -257,11 +257,11 @@ nucSpacingPanel = panelFcn(nucMainContentGrid, 'Title', 'Image Spacing');
 nucSpacingPanel.Layout.Row = 1;
 nucSpacingGrid = uigridlayout(nucSpacingPanel, [1, 6]);
 labelFcn(nucSpacingGrid, 'Text', 'XY Pixel:');
-handles.nucXYSpacingInput = editFcn(nucSpacingGrid, 'numeric', 'Value', lastUsed.nucXYSpacing, 'Tooltip', 'Pixel width in XY (µm).');
-labelFcn(nucSpacingGrid, 'Text', '(µm)');
+handles.nucXYSpacingInput = editFcn(nucSpacingGrid, 'numeric', 'Value', lastUsed.nucXYSpacing, 'Tooltip', 'Pixel width in XY (um).');
+labelFcn(nucSpacingGrid, 'Text', '(um)');
 labelFcn(nucSpacingGrid, 'Text', 'Z-Frame:');
-handles.nucZSpacingInput = editFcn(nucSpacingGrid, 'numeric', 'Value', lastUsed.nucZSpacing, 'Tooltip', 'Slice depth in Z (µm).', 'Enable', 'off');
-labelFcn(nucSpacingGrid, 'Text', '(µm)');
+handles.nucZSpacingInput = editFcn(nucSpacingGrid, 'numeric', 'Value', lastUsed.nucZSpacing, 'Tooltip', 'Slice depth in Z (um).', 'Enable', 'off');
+labelFcn(nucSpacingGrid, 'Text', '(um)');
 
 % --- Deconvolution Panel (Nuclei) ---
 nucDeconvPanel = panelFcn(nucMainContentGrid, 'Title', '');
@@ -376,7 +376,7 @@ labelFcn(nucPreprocGrid, 'Text', 'Mode:');
 handles.nucPreprocessModeDrop = dropdownFcn(nucPreprocGrid, 'Items', {'3D', '2D (Slice-by-slice)', 'On Z-Projection'}, 'Value', lastUsed.nucPreProcMode, 'Tooltip', 'Choose how to apply pre-processing to nuclei.');
 handles.nucPreprocessModeDrop.Layout.Column = 2;
 handles.nucPreprocessModeDrop.Layout.Row = 2;
-handles.nucPreprocessScaleCheck = checkboxFcn(nucPreprocGrid, 'Text', 'Scale', 'Value', lastUsed.nucPreProcScale, 'Enable', 'off', 'Tooltip', 'Use physical units (µm) for 3D operations.');
+handles.nucPreprocessScaleCheck = checkboxFcn(nucPreprocGrid, 'Text', 'Scale', 'Value', lastUsed.nucPreProcScale, 'Enable', 'off', 'Tooltip', 'Use physical units (um) for 3D operations.');
 handles.nucPreprocessScaleCheck.Layout.Column = 3;
 handles.nucPreprocessScaleCheck.Layout.Row = 2;
 handles.nucPreprocessProjectionDrop = dropdownFcn(nucPreprocGrid, 'Items', {'Max', 'Min', 'Mean', 'Median'}, 'Value', lastUsed.nucPreProcProjection, 'Tooltip', 'Z-projection type.');
@@ -481,7 +481,7 @@ labelFcn(nucBgGrid, 'Text', 'Mode:');
 handles.nucBgCorrModeDrop = dropdownFcn(nucBgGrid, 'Items', {'3D', '2D (Slice-by-slice)', 'On Z-Projection'}, 'Value', lastUsed.nucBgCorrMode, 'Tooltip', 'Choose how to apply background correction to nuclei.');
 handles.nucBgCorrModeDrop.Layout.Column = 2;
 handles.nucBgCorrModeDrop.Layout.Row = 2;
-handles.nucBgCorrScaleCheck = checkboxFcn(nucBgGrid, 'Text', 'Scale', 'Value', lastUsed.nucBgCorrScale, 'Enable', 'off', 'Tooltip', 'Use physical units (µm) for 3D operations.');
+handles.nucBgCorrScaleCheck = checkboxFcn(nucBgGrid, 'Text', 'Scale', 'Value', lastUsed.nucBgCorrScale, 'Enable', 'off', 'Tooltip', 'Use physical units (um) for 3D operations.');
 handles.nucBgCorrScaleCheck.Layout.Column = 3;
 handles.nucBgCorrScaleCheck.Layout.Row = 2;
 handles.nucBgCorrProjectionDrop = dropdownFcn(nucBgGrid, 'Items', {'Max', 'Min', 'Mean', 'Median'}, 'Value', lastUsed.nucBgCorrProjection, 'Tooltip', 'Z-projection type.');
@@ -496,7 +496,7 @@ handles.nucBgMethodDrop.Layout.Row = 3;
 
 % Row 4: Parameter controls
 labelFcn(nucBgGrid, 'Text', 'Parameter:');
-handles.nucBgParamInput = editFcn(nucBgGrid, 'numeric', 'Value', lastUsed.nucBgParam, 'Tooltip', 'Gaussian: Sigma. Rolling-ball/Top-hat: Radius. Units are µm if "Scale" is checked (3D), otherwise pixels/voxels.');
+handles.nucBgParamInput = editFcn(nucBgGrid, 'numeric', 'Value', lastUsed.nucBgParam, 'Tooltip', 'Gaussian: Sigma. Rolling-ball/Top-hat: Radius. Units are um if "Scale" is checked (3D), otherwise pixels/voxels.');
 handles.nucBgParamInput.Layout.Row = 4;
 handles.nucBgParamInput.Layout.Column = 2;
 unitsLabel = labelFcn(nucBgGrid, 'Text', '(units)');
@@ -554,7 +554,7 @@ handles.nucSegParam1Label = labelFcn(methodsGrid, 'Text', 'Parameter:', 'Tag', '
 handles.nucSegParam1Label.Layout.Row = 3;
 handles.nucSegParam1Label.Layout.Column = 1;
 
-% Primary parameter input (Threshold, Std×, Offset, or Algorithm)
+% Primary parameter input (Threshold, Stdx, Offset, or Algorithm)
 handles.nucSegParam1Input = editFcn(methodsGrid, 'numeric', 'Value', lastUsed.nucSegAbsoluteThreshold, 'Tooltip', 'Parameter value for the selected method.', 'Tag', 'nuc_seg_control');
 handles.nucSegParam1Input.Layout.Row = 3;
 handles.nucSegParam1Input.Layout.Column = 2;
@@ -707,8 +707,8 @@ for k = 1:Nmax
     labelFcn(topControlsGrid, 'Text', ['Path ' num2str(k) ':']);
     handles.channelPathTexts(k) = editFcn(topControlsGrid, 'Value', lastUsed.channelFilePaths{k}, 'Editable', 'off');
     handles.channelBrowseButtons(k) = buttonFcn(topControlsGrid, 'Text', 'Browse');
-    handles.upButtons(k) = buttonFcn(topControlsGrid, 'Text', '↑', 'FontSize', 16);
-    handles.downButtons(k) = buttonFcn(topControlsGrid, 'Text', '↓', 'FontSize', 16);
+    handles.upButtons(k) = buttonFcn(topControlsGrid, 'Text', 'Up', 'FontSize', 12);
+    handles.downButtons(k) = buttonFcn(topControlsGrid, 'Text', 'Down', 'FontSize', 12);
 
     % --- Host panel for the main scrolling content ---
     contentHostPanel = panelFcn(outerGrid, 'BorderType', 'none');
@@ -724,11 +724,11 @@ for k = 1:Nmax
     spacingPanel.Layout.Row = 1;
     spacingGrid = uigridlayout(spacingPanel, [1, 6]);
     labelFcn(spacingGrid, 'Text', 'XY Pixel:');
-    handles.xySpacingInputs(k) = editFcn(spacingGrid, 'numeric', 'Value', lastUsed.xySpacing{k}, 'Tooltip', 'Width of a pixel in the XY plane, in micrometers (µm).');
-    labelFcn(spacingGrid, 'Text', '(µm)');
+    handles.xySpacingInputs(k) = editFcn(spacingGrid, 'numeric', 'Value', lastUsed.xySpacing{k}, 'Tooltip', 'Width of a pixel in the XY plane, in micrometers (um).');
+    labelFcn(spacingGrid, 'Text', '(um)');
     labelFcn(spacingGrid, 'Text', 'Z-Frame:');
-    handles.zSpacingInputs(k) = editFcn(spacingGrid, 'numeric', 'Value', lastUsed.zSpacing{k}, 'Enable', 'off', 'Tooltip', 'Depth of a voxel in the Z direction (distance between slices), in micrometers (µm).');
-    labelFcn(spacingGrid, 'Text', '(µm)');
+    handles.zSpacingInputs(k) = editFcn(spacingGrid, 'numeric', 'Value', lastUsed.zSpacing{k}, 'Enable', 'off', 'Tooltip', 'Depth of a voxel in the Z direction (distance between slices), in micrometers (um).');
+    labelFcn(spacingGrid, 'Text', '(um)');
 
     % 2. Deconvolution
     deconvPanel = panelFcn(mainContentGrid, 'Title', '');
@@ -842,7 +842,7 @@ for k = 1:Nmax
     % Row 2: Mode controls
     labelFcn(preprocGrid, 'Text', 'Mode:');
     handles.preprocessModeDrops(k) = dropdownFcn(preprocGrid, 'Items', {'3D', '2D (Slice-by-slice)', 'On Z-Projection'}, 'Value', lastUsed.preProcMode{k}, 'Tooltip', 'Choose how to apply pre-processing.');
-    handles.preprocessScaleChecks(k) = checkboxFcn(preprocGrid, 'Text', 'Scale', 'Value', lastUsed.preProcScale{k}, 'Enable', 'off', 'Tooltip', 'Use physical units (µm) for 3D operations.');
+    handles.preprocessScaleChecks(k) = checkboxFcn(preprocGrid, 'Text', 'Scale', 'Value', lastUsed.preProcScale{k}, 'Enable', 'off', 'Tooltip', 'Use physical units (um) for 3D operations.');
     handles.preprocessProjectionDrops(k) = dropdownFcn(preprocGrid, 'Items', {'Max', 'Min', 'Mean', 'Median'}, 'Value', lastUsed.preProcProjection{k}, 'Tooltip', 'Z-projection type.');
     
     % Row 3: Method controls
@@ -941,7 +941,7 @@ for k = 1:Nmax
     % Row 2: Mode controls
     labelFcn(bgGrid, 'Text', 'Mode:');
     handles.bgCorrModeDrops(k) = dropdownFcn(bgGrid, 'Items', {'3D', '2D (Slice-by-slice)', 'On Z-Projection'}, 'Value', lastUsed.bgCorrMode{k}, 'Tooltip', 'Choose how to apply background correction.');
-    handles.bgCorrScaleChecks(k) = checkboxFcn(bgGrid, 'Text', 'Scale', 'Value', lastUsed.bgCorrScale{k}, 'Enable', 'off', 'Tooltip', 'If checked, 3D Gaussian method uses physical units (µm).');
+    handles.bgCorrScaleChecks(k) = checkboxFcn(bgGrid, 'Text', 'Scale', 'Value', lastUsed.bgCorrScale{k}, 'Enable', 'off', 'Tooltip', 'If checked, 3D Gaussian method uses physical units (um).');
     handles.bgCorrProjectionDrops(k) = dropdownFcn(bgGrid, 'Items', {'Max', 'Min', 'Mean', 'Median'}, 'Value', lastUsed.bgCorrProjection{k}, 'Tooltip', 'Type of Z-projection to perform if mode is On Z-Projection.');
     
     % Row 3: Method controls
@@ -952,7 +952,7 @@ for k = 1:Nmax
     
     % Row 4: Parameter controls
     labelFcn(bgGrid, 'Text', 'Parameter:');
-    handles.bgParamInputs(k) = editFcn(bgGrid, 'numeric', 'Value', lastUsed.bgParam{k}, 'Tooltip', 'Gaussian: Sigma. Rolling-ball/Top-hat: Radius. Units are µm if "Scale" is checked (3D), otherwise pixels/voxels.');
+    handles.bgParamInputs(k) = editFcn(bgGrid, 'numeric', 'Value', lastUsed.bgParam{k}, 'Tooltip', 'Gaussian: Sigma. Rolling-ball/Top-hat: Radius. Units are um if "Scale" is checked (3D), otherwise pixels/voxels.');
     handles.bgParamInputs(k).Layout.Row = 4;
     handles.bgParamInputs(k).Layout.Column = 2;
     unitsLabel = labelFcn(bgGrid, 'Text', '(units)');
@@ -980,7 +980,7 @@ for k = 1:Nmax
     % --- Row 1: Mode Controls ---
     labelFcn(maximaGrid, 'Text', 'Mode:');
     handles.maximaModeDrops(k) = dropdownFcn(maximaGrid, 'Items', {'3D', '2D (Slice-by-slice)', 'On Z-Projection'}, 'Value', lastUsed.maximaMode{k}, 'Tooltip', 'Choose where to find local maxima.');
-    handles.maximaScaleChecks(k) = checkboxFcn(maximaGrid, 'Text', 'Scale', 'Value', lastUsed.maximaScale{k}, 'Tooltip', 'Use physical units (µm) for neighborhood size.');
+    handles.maximaScaleChecks(k) = checkboxFcn(maximaGrid, 'Text', 'Scale', 'Value', lastUsed.maximaScale{k}, 'Tooltip', 'Use physical units (um) for neighborhood size.');
     handles.maximaProjectionDrops(k) = dropdownFcn(maximaGrid, 'Items', {'Max', 'Min', 'Mean', 'Median'}, 'Value', lastUsed.maximaProjection{k}, 'Tooltip', 'Type of Z-projection to perform if mode is On Z-Projection.');
     handles.maximaProjectionDrops(k).Layout.Column = 4; % Last column
 
@@ -1010,7 +1010,7 @@ for k = 1:Nmax
     handles.logPanel(k).Layout.Column = [1 4];
     logGrid = uigridlayout(handles.logPanel(k), [1, 6]);
     labelFcn(logGrid, 'Text', 'Sigma:', 'Tag', 'log_control');
-    handles.logSigmaInputs(k) = editFcn(logGrid, 'numeric', 'Value', lastUsed.sigmaValue{k}, 'Tooltip', 'Sigma for LoG filter. Units are µm if "Scale" is checked (3D), otherwise pixels.', 'Tag', 'log_control');
+    handles.logSigmaInputs(k) = editFcn(logGrid, 'numeric', 'Value', lastUsed.sigmaValue{k}, 'Tooltip', 'Sigma for LoG filter. Units are um if "Scale" is checked (3D), otherwise pixels.', 'Tag', 'log_control');
     labelFcn(logGrid, 'Text', '(units)', 'Tag', 'log_control');
     labelFcn(logGrid, 'Text', 'Threshold:', 'Tag', 'log_control');
     handles.logThresholdInputs(k) = editFcn(logGrid, 'numeric', 'Value', lastUsed.peakThresholdValue{k}, 'Tooltip', 'Minimum peak intensity after LoG filtering to be considered a maximum.', 'Tag', 'log_control');
@@ -1111,13 +1111,13 @@ for k = 1:Nmax
     fitFilterGrid.RowSpacing = 5;
     fitFilterGrid.ColumnSpacing = 5;
 
-    % Row 1: R² value filtering
+    % Row 1: R2 value filtering
     % Safely get fitFilterRSquaredEnabled value, defaulting to false if not present
     fitFilterRSquaredEnabledValue = false;
     if isfield(lastUsed, 'fitFilterRSquaredEnabled') && k <= length(lastUsed.fitFilterRSquaredEnabled)
         fitFilterRSquaredEnabledValue = lastUsed.fitFilterRSquaredEnabled{k};
     end
-    handles.fitFilterRSquaredEnabledChecks(k) = checkboxFcn(fitFilterGrid, 'Text', 'R²/Quality Score:', 'Value', fitFilterRSquaredEnabledValue, 'Tooltip', 'Filter fits by R² (Gaussian) or Quality Score (Radial Symmetry)');
+    handles.fitFilterRSquaredEnabledChecks(k) = checkboxFcn(fitFilterGrid, 'Text', 'R2/Quality Score:', 'Value', fitFilterRSquaredEnabledValue, 'Tooltip', 'Filter fits by R2 (Gaussian) or Quality Score (Radial Symmetry)');
     handles.fitFilterRSquaredEnabledChecks(k).Layout.Row = 1;
     handles.fitFilterRSquaredEnabledChecks(k).Layout.Column = 1;
     % Safely get fitFilterRSquaredMin value, defaulting to 0.8 if not present
@@ -1160,7 +1160,7 @@ for k = 1:Nmax
     if isfield(lastUsed, 'fitFilterSigmaSumMin') && k <= length(lastUsed.fitFilterSigmaSumMin)
         fitFilterSigmaSumMinValue = lastUsed.fitFilterSigmaSumMin{k};
     end
-    handles.fitFilterSigmaSumMinInputs(k) = editFcn(fitFilterGrid, 'numeric', 'Value', fitFilterSigmaSumMinValue, 'Tooltip', 'Minimum sum of sigma values (pixels or µm)');
+    handles.fitFilterSigmaSumMinInputs(k) = editFcn(fitFilterGrid, 'numeric', 'Value', fitFilterSigmaSumMinValue, 'Tooltip', 'Minimum sum of sigma values (pixels or um)');
     handles.fitFilterSigmaSumMinInputs(k).Layout.Row = 2;
     handles.fitFilterSigmaSumMinInputs(k).Layout.Column = 2;
     % Safely get fitFilterSigmaSumMax value, defaulting to 10.0 if not present
@@ -1168,7 +1168,7 @@ for k = 1:Nmax
     if isfield(lastUsed, 'fitFilterSigmaSumMax') && k <= length(lastUsed.fitFilterSigmaSumMax)
         fitFilterSigmaSumMaxValue = lastUsed.fitFilterSigmaSumMax{k};
     end
-    handles.fitFilterSigmaSumMaxInputs(k) = editFcn(fitFilterGrid, 'numeric', 'Value', fitFilterSigmaSumMaxValue, 'Tooltip', 'Maximum sum of sigma values (pixels or µm)');
+    handles.fitFilterSigmaSumMaxInputs(k) = editFcn(fitFilterGrid, 'numeric', 'Value', fitFilterSigmaSumMaxValue, 'Tooltip', 'Maximum sum of sigma values (pixels or um)');
     handles.fitFilterSigmaSumMaxInputs(k).Layout.Row = 2;
     handles.fitFilterSigmaSumMaxInputs(k).Layout.Column = 3;
     tempLabel4 = labelFcn(fitFilterGrid, 'Text', '(units)', 'Tooltip', 'Units depend on image spacing settings');
@@ -1382,8 +1382,10 @@ end
 
 % --- Actions & Summary Panel ---
 actionsPanel = panelFcn(rightGrid, 'Title', 'Actions & Summary');
-actionsGrid = uigridlayout(actionsPanel, [5, 1]);
-actionsGrid.RowHeight = {'fit', 'fit', 'fit', 'fit', 'fit'};
+actionsGrid = uigridlayout(actionsPanel, [4, 1]);
+actionsGrid.RowHeight = {'fit', 'fit', 'fit', '1x'};
+actionsGrid.Padding = [5 5 5 5];
+actionsGrid.RowSpacing = 8;
 
 % Global Z Slider - Compact Layout
 zPanel = panelFcn(actionsGrid, 'Title', 'Global Z Control');
@@ -1402,8 +1404,8 @@ playPauseGrid.RowHeight = {'fit'};
 playPauseGrid.Padding = [0 0 0 0];
 playPauseGrid.ColumnSpacing = 3;
 
-handles.playButton = buttonFcn(playPauseGrid, 'Text', '▶ Play', 'FontWeight', 'bold');
-handles.pauseButton = buttonFcn(playPauseGrid, 'Text', '⏸ Pause', 'FontWeight', 'bold');
+handles.playButton = buttonFcn(playPauseGrid, 'Text', 'Play', 'FontWeight', 'bold');
+handles.pauseButton = buttonFcn(playPauseGrid, 'Text', 'Pause', 'FontWeight', 'bold');
 handles.playButton.Enable = 'off'; % Initially disabled until z-stack data is loaded
 handles.pauseButton.Enable = 'off'; % Initially disabled until play starts
 
@@ -1412,11 +1414,11 @@ statusMaximaPanel = panelFcn(actionsGrid, 'BorderType', 'none');
 statusMaximaGrid = uigridlayout(statusMaximaPanel, [3, 1]);
 statusMaximaGrid.RowHeight = {'fit', 'fit', 'fit'};
 statusMaximaGrid.Padding = [5 5 5 5];
-statusMaximaGrid.RowSpacing = 2;
+statusMaximaGrid.RowSpacing = 3;
 
 handles.statusLabel = labelFcn(statusMaximaGrid, 'Text', 'Status: Idle', 'FontWeight', 'bold');
-maximaTitleLabel = labelFcn(statusMaximaGrid, 'Text', 'Local Maxima Counts:', 'FontWeight', 'bold');
-handles.maximaCountLabel = labelFcn(statusMaximaGrid, 'Text', '', 'VerticalAlignment', 'top');
+handles.maximaTotalLabel = labelFcn(statusMaximaGrid, 'Text', 'Total Maxima Counts: 0', 'FontWeight', 'bold');
+handles.maximaCountLabel = labelFcn(statusMaximaGrid, 'Text', 'Per-channel: none');
 
 buttonsPanel = panelFcn(actionsGrid, 'BorderType', 'none');
 buttonsGrid = uigridlayout(buttonsPanel, [2, 1]);
@@ -1431,17 +1433,35 @@ handles.abortButton.Layout.Row = 2;
 
 % Export Options Section - Adaptive Checklist
 exportPanel = panelFcn(actionsGrid, 'Title', 'Export Options');
-exportMainGrid = uigridlayout(exportPanel, [1, 2]);
-exportMainGrid.ColumnWidth = {'1x', 'fit'};
+exportMainGrid = uigridlayout(exportPanel, [2, 1]);
+exportMainGrid.RowHeight = {'1x', 'fit'};
 exportMainGrid.Padding = [5 5 5 5];
-exportMainGrid.RowSpacing = 5;
+exportMainGrid.RowSpacing = 3;
 
-% Left Column: Scrollable adaptive checklist (will be populated after data is loaded)
+% Left Column: Stage-based checklist (up/down navigation)
 exportListPanel = panelFcn(exportMainGrid, 'BorderType', 'none');
 exportListPanel.Layout.Row = 1;
-exportListPanel.Layout.Column = 1;
-exportListGrid = uigridlayout(exportListPanel, [10, 1]); % Max 10 items
-exportListGrid.RowHeight = repmat({'fit'}, 1, 10);
+
+exportListOuterGrid = uigridlayout(exportListPanel, [2, 1]);
+exportListOuterGrid.RowHeight = {'fit', '1x'};
+exportListOuterGrid.Padding = [0 0 0 0];
+exportListOuterGrid.RowSpacing = 3;
+
+exportNavGrid = uigridlayout(exportListOuterGrid, [1, 4]);
+exportNavGrid.ColumnWidth = {'fit', 'fit', 'fit', '1x'};
+exportNavGrid.Padding = [0 0 0 0];
+exportNavGrid.ColumnSpacing = 4;
+labelFcn(exportNavGrid, 'Text', 'Items:');
+handles.exportStageLabel = labelFcn(exportNavGrid, 'Text', '1-1 / 1');
+handles.exportUpButton = buttonFcn(exportNavGrid, 'Text', char(8593), 'Tooltip', 'Show previous export items');
+handles.exportDownButton = buttonFcn(exportNavGrid, 'Text', char(8595), 'Tooltip', 'Show next export items');
+handles.exportUpButton.Layout.Column = 3;
+handles.exportDownButton.Layout.Column = 4;
+
+handles.exportVisibleSlots = 2;
+handles.exportNavState = 0;
+exportListGrid = uigridlayout(exportListOuterGrid, [handles.exportVisibleSlots, 1]);
+exportListGrid.RowHeight = repmat({'fit'}, 1, handles.exportVisibleSlots);
 exportListGrid.Padding = [0 0 0 0];
 exportListGrid.RowSpacing = 2;
 
@@ -1452,35 +1472,32 @@ handles.exportItemTypes = cell(1, 20);
 handles.numExportItems = 0; % Initialize to 0 - will be set by updateExportChecklist
 for i = 1:20
     handles.exportItemChecks(i) = checkboxFcn(exportListGrid, 'Text', '', 'Value', false, 'Visible', 'off');
-    if i <= 10
-        handles.exportItemChecks(i).Layout.Row = i;
-    end
+    handles.exportItemChecks(i).Layout.Row = mod(i - 1, handles.exportVisibleSlots) + 1;
 end
 
 % Right Column: Export controls and buttons
 exportControlsPanel = panelFcn(exportMainGrid, 'BorderType', 'none');
-exportControlsPanel.Layout.Row = 1;
-exportControlsPanel.Layout.Column = 2;
-exportControlsGrid = uigridlayout(exportControlsPanel, [4, 1]);
-exportControlsGrid.RowHeight = {'fit', 'fit', 'fit', 'fit'};
+exportControlsPanel.Layout.Row = 2;
+exportControlsGrid = uigridlayout(exportControlsPanel, [2, 1]);
+exportControlsGrid.RowHeight = {'fit', 'fit'};
 exportControlsGrid.Padding = [0 0 0 0];
-exportControlsGrid.RowSpacing = 5;
+exportControlsGrid.RowSpacing = 4;
 
 % Image format selection
-formatGrid = uigridlayout(exportControlsGrid, [2, 1]);
-formatGrid.RowHeight = {'fit', 'fit'};
+formatGrid = uigridlayout(exportControlsGrid, [1, 2]);
+formatGrid.ColumnWidth = {'fit', '1x'};
 formatGrid.Padding = [0 0 0 0];
 labelFcn(formatGrid, 'Text', 'Image Format:');
 handles.exportImageFormatDrop = dropdownFcn(formatGrid, 'Items', {'TIFF', 'PNG', 'JPEG'}, 'Value', lastUsed.exportImageFormat, 'Tooltip', 'Image format for processed image export');
 
-% Set directory button
-handles.exportDirButton = buttonFcn(exportControlsGrid, 'Text', 'Set Directory', 'Tooltip', 'Select export directory');
-
-% Select all button
-handles.exportSelectAllButton = buttonFcn(exportControlsGrid, 'Text', 'Select All', 'Tooltip', 'Select all available export items');
-
-% Main export button (at bottom)
-handles.exportAllSelectedButton = buttonFcn(exportControlsGrid, 'Text', 'Export', 'FontWeight', 'bold', 'Tooltip', 'Export all checked items');
+% Buttons row
+exportButtonsGrid = uigridlayout(exportControlsGrid, [1, 3]);
+exportButtonsGrid.ColumnWidth = {'1x', '1x', '1x'};
+exportButtonsGrid.Padding = [0 0 0 0];
+exportButtonsGrid.ColumnSpacing = 3;
+handles.exportDirButton = buttonFcn(exportButtonsGrid, 'Text', 'Set Directory', 'Tooltip', 'Select export directory');
+handles.exportSelectAllButton = buttonFcn(exportButtonsGrid, 'Text', 'Select All', 'Tooltip', 'Select all available export items');
+handles.exportAllSelectedButton = buttonFcn(exportButtonsGrid, 'Text', 'Export', 'FontWeight', 'bold', 'Tooltip', 'Export all checked items');
 
 
 % --- Analysis Panel ---
@@ -1498,7 +1515,7 @@ analysisControlsGrid = uigridlayout(analysisControlsPanel, [2, 1]);
 analysisControlsGrid.RowHeight = {'fit', 'fit'};
 
 % Collapse/expand button
-handles.analysisCollapseButton = buttonFcn(analysisControlsGrid, 'Text', '◄ Collapse', 'FontSize', 10);
+handles.analysisCollapseButton = buttonFcn(analysisControlsGrid, 'Text', '< Collapse', 'FontSize', 10);
 
 % Info label
 handles.analysisInfoLabel = labelFcn(analysisControlsGrid, 'Text', 'Shows signal composition for each nucleus when segmentation is enabled.', ...

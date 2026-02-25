@@ -239,7 +239,6 @@ function [selectedFeatures, customExpressions, cancelled] = featureSelectionUI(f
     % Hook section navigation callbacks and initialize view state
     upSectionBtn.ButtonPushedFcn = @(~,~) navigateFeatureSections('up');
     downSectionBtn.ButtonPushedFcn = @(~,~) navigateFeatureSections('down');
-    fig.SizeChangedFcn = @(~,~) recomputeSectionWindowSize();
     recomputeSectionWindowSize();
     
     % Statistics panel

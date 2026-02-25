@@ -67,8 +67,16 @@ function [predictions, scores, confidence, classLabels] = applyClassifier(model,
         end
     end
     
-    % Handle NaN values - mark as invalid
-    validMask = all(~isnan(X), 2);
+    % Ensure real-valued feature matrix for prediction compatibility.
+    if ~isreal(X)
+        imagPart = imag(X);
+        complexMask = isfinite(imagPart) & (abs(imagPart) > 1e-12);
+        X(complexMask) = NaN;
+    end
+    X = real(X);
+
+    % Handle non-finite values - mark rows as invalid
+    validMask = all(isfinite(X), 2);
     nSamples = size(X, 1);
     
     % Initialize outputs

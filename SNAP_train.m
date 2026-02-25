@@ -6,14 +6,19 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
 %   Opens a SNAP-style training GUI for channel-aware multi-SVM training.
 %   The GUI:
 %     - Loads a SNAP parameter file to infer channel count and per-channel defaults
-%     - Uses exactly one SVM slot per detected channel (toggle channels on/off)
+%     - Uses exactly one independent SVM slot per detected channel (toggle on/off)
+%     - Supports a parameter file per channel tab (with template file prefill)
 %     - Sets match distance per channel (per SVM)
 %     - Lets you assign training/validation directories per channel
-%     - Lets you browse a shared output directory
+%     - Lets you choose output directory/classifier filename per channel
 %     - Lets you select base features + custom expressions (shared engine with SNAP_classify)
 %     - Supports manual SVM hyperparameters OR validation-based optimization
 %     - Optionally emits a sweep performance report (log + plot)
-%     - Trains one classifier per selected channel
+%     - Trains one classifier per selected channel without cross-channel pooling
+%   NOTE:
+%     Channel numbers are slot labels for bookkeeping. Training is always
+%     channel-local. Reuse a trained classifier on multiple channels by
+%     loading/injecting the same classifier file into each channel slot.
 %
 % PROGRAMMATIC MODE:
 %   SNAP_train(exportFiles, labelFiles, outputClassifierPath, ...)
@@ -58,6 +63,9 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
 %   'SweepBoxConstraints'    - box constraints to test (default: [0.1 1 10])
 %   'SweepKernelScales'      - kernel scales for non-linear kernels (default: {'auto',0.5,1,2})
 %   'SweepPolynomialOrders'  - polynomial orders (default: [2 3 4])
+%   'SweepTieHandling'       - tie policy for equal-best score:
+%                              'prefer_simple' (default), 'prompt', 'first'
+%   'SweepTiePromptCallback' - optional callback for tie selection in prompt mode
 %   'Verbose'                - true/false (default: true)
 %   'ProgressCallback'       - optional function handle for step-by-step progress logs
 %
@@ -97,6 +105,8 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
     p.addParameter('SweepBoxConstraints', [0.1 1 10], @(x) isnumeric(x) && isvector(x) && all(x > 0));
     p.addParameter('SweepKernelScales', {'auto', 0.5, 1, 2}, @(x) iscell(x) || isstring(x) || isnumeric(x) || ischar(x));
     p.addParameter('SweepPolynomialOrders', [2 3 4], @(x) isnumeric(x) && isvector(x) && all(x >= 2));
+    p.addParameter('SweepTieHandling', 'prefer_simple', @(x) ischar(x) || isstring(x));
+    p.addParameter('SweepTiePromptCallback', [], @(x) isempty(x) || isa(x, 'function_handle'));
     p.addParameter('Verbose', true, @(x) islogical(x) || isnumeric(x));
     p.addParameter('ProgressCallback', [], @(x) isempty(x) || isa(x, 'function_handle'));
     p.parse(varargin{:});
@@ -136,6 +146,47 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
     [~, featureInfo] = snap_helpers.classification.getAvailableFeatures(char(fittingMethod), has3D, false);
     selectedFeatures = normalizeSelectedFeatures(opts.SelectedFeatures, featureInfo);
     customExpressions = normalizeCustomExpressionList(opts.CustomExpressions);
+
+    capability = snap_helpers.classification.resolveCapabilitiesFromContext( ...
+        char(fittingMethod), has3D, 'ChannelIndex', 1, 'HasPhysicalSpacing', false);
+    preflightPack = struct( ...
+        'specVersion', '2.0.0', ...
+        'packId', 'snap_train_programmatic_preflight', ...
+        'strictModeDefault', false, ...
+        'channelPacks', struct( ...
+            'channelIdx', 1, ...
+            'selectedFeatures', {selectedFeatures}, ...
+            'customExpressions', customExpressions, ...
+            'requiredFeatures', {{}}, ...
+            'requiredCapabilities', struct( ...
+                'fittingMethod', capability.fittingMethod, ...
+                'has3D', logical(capability.has3D), ...
+                'hasPhysicalSpacing', false)));
+
+    [preflightPack, preflightReport] = ...
+        snap_helpers.classification.validateExpressionPackAgainstCapabilities( ...
+            preflightPack, capability, 'Mode', 'permissive', 'AutoGuardUnsafeExpressions', true);
+
+    if ~isempty(preflightPack.channelPacks)
+        selectedFeatures = preflightPack.channelPacks(1).selectedFeatures;
+        customExpressions = preflightPack.channelPacks(1).customExpressions;
+    end
+    if preflightReport.nDroppedBase > 0 || preflightReport.nDroppedCustom > 0
+        emitProgress(progressCb, ...
+            'Feature preflight pruning: dropped base=%d, dropped custom=%d.', ...
+            preflightReport.nDroppedBase, preflightReport.nDroppedCustom);
+    end
+    if preflightReport.nAutoGuarded > 0
+        emitProgress(progressCb, ...
+            'Feature preflight safety: auto-guarded %d custom expression(s).', ...
+            preflightReport.nAutoGuarded);
+    end
+    if ~isempty(preflightReport.errors)
+        error('Feature preflight validation failed: %s', strjoin(preflightReport.errors, ' | '));
+    end
+    for i = 1:numel(preflightReport.warnings)
+        emitProgress(progressCb, 'Feature preflight warning: %s', preflightReport.warnings{i});
+    end
 
     [XTrain, featureNames, validTrainMask, extractionInfoTrain, selectedFeatures, customExpressions] = ...
         buildTrainingFeatureMatrixWithFallback( ...
@@ -200,6 +251,22 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
         [XVal, ~, validValMask, extractionInfoVal] = snap_helpers.classification.buildFeatureMatrix( ...
             valFitData, selectedFeatures, featureInfo, customExpressions);
         emitProgress(progressCb, 'Validation feature matrix built: %d candidate rows, %d feature columns.', size(XVal,1), size(XVal,2));
+        if isstruct(extractionInfoVal) && isfield(extractionInfoVal, 'modelStats') && ...
+                isstruct(extractionInfoVal.modelStats) && ...
+                isfield(extractionInfoVal.modelStats, 'requested') && extractionInfoVal.modelStats.requested
+            msVal = extractionInfoVal.modelStats;
+            if isfield(msVal, 'augmented') && msVal.augmented && isfield(msVal, 'summary') && isstruct(msVal.summary)
+                emitProgress(progressCb, ...
+                    ['Validation model-stat augmentation: computed %d/%d windows ', ...
+                     '(missingWindow=%d, modelFailures=%d).'], ...
+                    getfieldwithdefault(msVal.summary, 'nComputed', 0), ...
+                    getfieldwithdefault(msVal.summary, 'nTotal', 0), ...
+                    getfieldwithdefault(msVal.summary, 'nMissingWindow', 0), ...
+                    getfieldwithdefault(msVal.summary, 'nModelFailures', 0));
+            else
+                emitProgress(progressCb, 'Validation model-stat features requested: using existing fields (no augmentation run).');
+            end
+        end
         if isstruct(extractionInfoVal) && isfield(extractionInfoVal, 'featuresAllNaN') && ...
                 ~isempty(extractionInfoVal.featuresAllNaN)
             emitProgress(progressCb, 'Validation feature extraction all-NaN feature(s): %s', ...
@@ -227,6 +294,8 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
             sweepCfg.boxConstraints = opts.SweepBoxConstraints(:)';
             sweepCfg.kernelScales = normalizeMixedList(opts.SweepKernelScales);
             sweepCfg.polynomialOrders = opts.SweepPolynomialOrders(:)';
+            sweepCfg.tieHandling = normalizeSweepTieHandling(opts.SweepTieHandling);
+            sweepCfg.tiePromptCallback = opts.SweepTiePromptCallback;
 
             trainOptions = applyTrainingDefaults(opts.TrainingOptions);
             emitProgress(progressCb, 'Starting validation sweep across %d kernel(s), %d box value(s), %d scale value(s), %d poly order(s).', ...
@@ -272,6 +341,7 @@ function varargout = SNAP_train(exportFiles, labelFiles, outputClassifierPath, v
     metadata.labelFiles = labelFiles;
     metadata.matchDistance = opts.MatchDistance;
     metadata.bestParams = bestParams;
+    metadata.sweepTieHandling = normalizeSweepTieHandling(opts.SweepTieHandling);
     metadata.trainingLabelsFixedDuringValidation = true;
     if hasValidationSet
         metadata.validation = validation;
@@ -328,153 +398,66 @@ function out = runTrainingUI()
 % runTrainingUI - SNAP-style GUI for channel-aware classifier training
 
     fig = uifigure('Name', 'SNAP Train - Multi-Channel SVM Training', ...
-        'Position', [70 70 1460 860]);
+        'Position', [50 50 1280 820]);
 
-    mainGrid = uigridlayout(fig, [1, 2]);
-    mainGrid.ColumnWidth = {520, '1x'};
+    mainGrid = uigridlayout(fig, [2, 2]);
+    mainGrid.RowHeight = {'fit', '1x'};
+    mainGrid.ColumnWidth = {'1.45x', '1x'};
     mainGrid.Padding = [10 10 10 10];
+    mainGrid.RowSpacing = 10;
     mainGrid.ColumnSpacing = 10;
 
-    % ---------------------------------------------------------------------
-    % Left panel: configuration
-    % ---------------------------------------------------------------------
-    cfgPanel = uipanel(mainGrid, 'Title', 'Training Configuration', 'FontWeight', 'bold');
-    cfgPanel.Layout.Column = 1;
-    cfgGrid = uigridlayout(cfgPanel, [6, 1]);
-    cfgGrid.RowHeight = {'fit', 'fit', 'fit', 'fit', 'fit', '1x'};
-    cfgGrid.RowSpacing = 8;
-    cfgGrid.Padding = [8 8 8 8];
+    setupPanel = uipanel(mainGrid, 'Title', 'Global Setup', 'FontWeight', 'bold');
+    setupPanel.Layout.Row = 1;
+    setupPanel.Layout.Column = [1 2];
+    setupGrid = uigridlayout(setupPanel, [2, 6]);
+    setupGrid.RowHeight = {'fit', 'fit'};
+    setupGrid.ColumnWidth = {'fit', '1x', 'fit', 'fit', 'fit', '1x'};
+    setupGrid.Padding = [6 6 6 6];
+    setupGrid.ColumnSpacing = 8;
 
-    % Parameter file
-    paramPanel = uipanel(cfgGrid, 'Title', 'Parameter File');
-    paramGrid = uigridlayout(paramPanel, [3, 3]);
-    paramGrid.RowHeight = {'fit', 'fit', 'fit'};
-    paramGrid.ColumnWidth = {'fit', '1x', 'fit'};
-    paramGrid.RowSpacing = 6;
-    paramGrid.Padding = [0 0 0 0];
-    uilabel(paramGrid, 'Text', 'SNAP Parameter File:', 'FontWeight', 'bold');
-    uilabel(paramGrid, 'Text', '');
-    uilabel(paramGrid, 'Text', '');
-    paramPathEdit = uieditfield(paramGrid, 'text', 'Editable', 'off', 'Placeholder', 'Select parameter file (.mat)');
-    paramPathEdit.Layout.Row = 2;
-    paramPathEdit.Layout.Column = [1 2];
-    paramBrowseBtn = uibutton(paramGrid, 'Text', 'Browse');
-    paramBrowseBtn.Layout.Row = 2;
+    uilabel(setupGrid, 'Text', 'Template Parameter File:', 'FontWeight', 'bold');
+    paramPathEdit = uieditfield(setupGrid, 'text', 'Editable', 'off', ...
+        'Placeholder', 'Optional: select parameter file to detect channel count');
+    paramPathEdit.Layout.Column = 2;
+    paramBrowseBtn = uibutton(setupGrid, 'Text', 'Browse');
     paramBrowseBtn.Layout.Column = 3;
-    detectedChannelsTextLabel = uilabel(paramGrid, 'Text', 'Detected Active Channels:', 'FontWeight', 'bold');
-    detectedChannelsTextLabel.Layout.Row = 3;
-    detectedChannelsTextLabel.Layout.Column = 1;
-    detectedChannelsLabel = uilabel(paramGrid, 'Text', '1');
-    detectedChannelsLabel.Layout.Row = 3;
-    detectedChannelsLabel.Layout.Column = 2;
+    uilabel(setupGrid, 'Text', 'Detected Channel Tabs:', 'FontWeight', 'bold');
+    detectedChannelsLabel = uilabel(setupGrid, 'Text', '1');
+    detectedChannelsLabel.Layout.Column = 5;
+    uilabel(setupGrid, 'Text', 'Configure channel-specific settings in tabs below.', ...
+        'FontColor', [0.35 0.35 0.35]);
+    channelCountPanel = uipanel(setupGrid, 'Title', 'Channel Tabs');
+    channelCountPanel.Layout.Row = 2;
+    channelCountPanel.Layout.Column = [1 3];
+    channelCountGrid = uigridlayout(channelCountPanel, [1, 4]);
+    channelCountGrid.ColumnWidth = {'fit', 'fit', 'fit', 'fit'};
+    channelCountGrid.Padding = [4 4 4 4];
+    channelCountGrid.ColumnSpacing = 6;
+    uilabel(channelCountGrid, 'Text', 'Count:', 'FontWeight', 'bold');
+    channelCountValueLabel = uilabel(channelCountGrid, 'Text', '1');
+    decreaseChannelBtn = uibutton(channelCountGrid, 'Text', '-');
+    increaseChannelBtn = uibutton(channelCountGrid, 'Text', '+');
+    manualCountNote = uilabel(setupGrid, ...
+        'Text', 'Use this to create tabs manually when no template parameter file is loaded.', ...
+        'FontColor', [0.35 0.35 0.35]);
+    manualCountNote.Layout.Row = 2;
+    manualCountNote.Layout.Column = [4 6];
 
-    % Output directory
-    outPanel = uipanel(cfgGrid, 'Title', 'Output');
-    outGrid = uigridlayout(outPanel, [1, 3]);
-    outGrid.ColumnWidth = {'fit', '1x', 'fit'};
-    outGrid.Padding = [6 6 6 6];
-    outGrid.RowSpacing = 6;
-    uilabel(outGrid, 'Text', 'Output Directory:');
-    outDirEdit = uieditfield(outGrid, 'text', 'Editable', 'off');
-    outDirEdit.Layout.Column = 2;
-    outBrowseBtn = uibutton(outGrid, 'Text', 'Browse');
-    outBrowseBtn.Layout.Column = 3;
+    channelPanel = uipanel(mainGrid, 'Title', 'Per-Channel Configuration', 'FontWeight', 'bold');
+    channelPanel.Layout.Row = 2;
+    channelPanel.Layout.Column = 1;
+    channelGrid = uigridlayout(channelPanel, [1, 1]);
+    channelGrid.Padding = [6 6 6 6];
+    channelTabGroup = uitabgroup(channelGrid);
 
-    % Core options
-    corePanel = uipanel(cfgGrid, 'Title', 'Core Options');
-    coreGrid = uigridlayout(corePanel, [2, 2]);
-    coreGrid.ColumnWidth = {'fit', '1x'};
-    coreGrid.RowHeight = {'fit', 'fit'};
-    coreGrid.Padding = [6 6 6 6];
-    optimizeCheck = uicheckbox(coreGrid, 'Text', 'Optimize with validation sweep', 'Value', true);
-    optimizeCheck.Layout.Column = [1 2];
-    sweepReportCheck = uicheckbox(coreGrid, ...
-        'Text', 'Include sweep performance report (log + plot)', ...
-        'Value', true);
-    sweepReportCheck.Layout.Row = 2;
-    sweepReportCheck.Layout.Column = [1 2];
-
-    % Feature / expression selection (shared engine with SNAP_classify)
-    featurePanel = uipanel(cfgGrid, 'Title', 'Features & Custom Expressions');
-    featureGrid = uigridlayout(featurePanel, [4, 1]);
-    featureGrid.RowHeight = {'fit', 'fit', 'fit', 90};
-    featureGrid.Padding = [6 6 6 6];
-    featureGrid.RowSpacing = 4;
-    selectFeaturesBtn = uibutton(featureGrid, 'Text', 'Select Features...', 'Enable', 'off');
-    selectFeaturesBtn.Layout.Row = 1;
-    loadFeaturePackBtn = uibutton(featureGrid, 'Text', 'Load Expression Pack...', 'Enable', 'off');
-    loadFeaturePackBtn.Layout.Row = 2;
-    featureCountLabel = uilabel(featureGrid, 'Text', 'AUTO: all non-position features (per channel)');
-    featureCountLabel.FontColor = [0.45 0.45 0.45];
-    featureCountLabel.Layout.Row = 3;
-    featureListArea = uitextarea(featureGrid, 'Editable', 'off', ...
-        'Value', {'AUTO: all non-position features', 'Custom expressions: none'});
-    featureListArea.Layout.Row = 4;
-
-    % Manual SVM options
-    svmPanel = uipanel(cfgGrid, 'Title', 'Manual SVM Hyperparameters');
-    svmGrid = uigridlayout(svmPanel, [4, 4]);
-    svmGrid.ColumnWidth = {'fit', '1x', 'fit', '1x'};
-    svmGrid.RowHeight = {'fit', 'fit', 'fit', 'fit'};
-    svmGrid.Padding = [6 6 6 6];
-    uilabel(svmGrid, 'Text', 'Kernel:');
-    kernelDrop = uidropdown(svmGrid, 'Items', {'rbf', 'linear', 'polynomial'}, 'Value', 'rbf');
-    kernelDrop.Layout.Column = 2;
-    uilabel(svmGrid, 'Text', 'Box Constraint (C):');
-    boxConstraintInput = uieditfield(svmGrid, 'numeric', 'Value', 1, 'LowerLimit', 1e-6);
-    boxConstraintInput.Layout.Column = 4;
-    uilabel(svmGrid, 'Text', 'Kernel Scale:');
-    kernelScaleInput = uieditfield(svmGrid, 'text', 'Value', 'auto');
-    kernelScaleInput.Layout.Column = 2;
-    uilabel(svmGrid, 'Text', 'Polynomial Order:');
-    polyOrderInput = uieditfield(svmGrid, 'numeric', 'Value', 3, 'LowerLimit', 2, 'RoundFractionalValues', true);
-    polyOrderInput.Layout.Column = 4;
-    standardizeCheck = uicheckbox(svmGrid, 'Text', 'Z-score normalize', 'Value', true);
-    standardizeCheck.Layout.Row = 3;
-    standardizeCheck.Layout.Column = [1 2];
-    crossValidateCheck = uicheckbox(svmGrid, 'Text', 'Cross-validate', 'Value', true);
-    crossValidateCheck.Layout.Row = 3;
-    crossValidateCheck.Layout.Column = [3 4];
-    uilabel(svmGrid, 'Text', 'CV folds (k):');
-    kFoldInput = uieditfield(svmGrid, 'numeric', 'Value', 5, 'LowerLimit', 2, 'RoundFractionalValues', true);
-    kFoldInput.Layout.Row = 4;
-    kFoldInput.Layout.Column = 2;
-    balanceClassCheck = uicheckbox(svmGrid, 'Text', 'Balance class bins (Real/Noise)', 'Value', true);
-    balanceClassCheck.Layout.Row = 4;
-    balanceClassCheck.Layout.Column = [3 4];
-
-    % Sweep options
-    sweepPanel = uipanel(cfgGrid, 'Title', 'Validation Sweep Grid');
-    sweepGrid = uigridlayout(sweepPanel, [4, 2]);
-    sweepGrid.ColumnWidth = {'fit', '1x'};
-    sweepGrid.RowHeight = {'fit', 'fit', 'fit', 'fit'};
-    sweepGrid.Padding = [6 6 6 6];
-    uilabel(sweepGrid, 'Text', 'Kernels:');
-    sweepKernelsInput = uieditfield(sweepGrid, 'text', 'Value', 'linear, rbf, polynomial');
-    uilabel(sweepGrid, 'Text', 'Box Constraints:');
-    sweepBoxInput = uieditfield(sweepGrid, 'text', 'Value', '0.1, 1, 10');
-    uilabel(sweepGrid, 'Text', 'Kernel Scales:');
-    sweepScaleInput = uieditfield(sweepGrid, 'text', 'Value', 'auto, 0.5, 1, 2');
-    uilabel(sweepGrid, 'Text', 'Polynomial Orders:');
-    sweepPolyInput = uieditfield(sweepGrid, 'text', 'Value', '2, 3, 4');
-
-    % ---------------------------------------------------------------------
-    % Right panel: channel selection and logs
-    % ---------------------------------------------------------------------
-    rightPanel = uipanel(mainGrid, 'Title', 'Per-Channel Training', 'FontWeight', 'bold');
+    rightPanel = uipanel(mainGrid, 'Title', 'Training Progress & Logs', 'FontWeight', 'bold');
+    rightPanel.Layout.Row = 2;
     rightPanel.Layout.Column = 2;
-    rightGrid = uigridlayout(rightPanel, [5, 1]);
-    rightGrid.RowHeight = {'fit', 'fit', 240, '1x', 'fit'};
+    rightGrid = uigridlayout(rightPanel, [3, 1]);
+    rightGrid.RowHeight = {'fit', '1x', 'fit'};
     rightGrid.RowSpacing = 8;
     rightGrid.Padding = [8 8 8 8];
-
-    perChannelDirPanel = uipanel(rightGrid, 'BorderType', 'none');
-    perChannelDirGrid = uigridlayout(perChannelDirPanel, [1, 3]);
-    perChannelDirGrid.ColumnWidth = {'fit', 'fit', '1x'};
-    perChannelDirGrid.Padding = [0 0 0 0];
-    browseTrainSelectedBtn = uibutton(perChannelDirGrid, 'Text', 'Browse Train Dir (Selected Row)');
-    browseValSelectedBtn = uibutton(perChannelDirGrid, 'Text', 'Browse Validation Dir (Selected Row)');
-    uilabel(perChannelDirGrid, 'Text', 'Select a row first, then browse directories for that channel.');
 
     progressPanel = uipanel(rightGrid, 'Title', 'Training Progress', 'FontWeight', 'bold');
     progressGrid = uigridlayout(progressPanel, [2, 1]);
@@ -497,14 +480,9 @@ function out = runTrainingUI()
     progressBarEmpty.Layout.Row = 1;
     progressBarEmpty.Layout.Column = 2;
 
-    channelTable = uitable(rightGrid);
-    channelTable.ColumnName = {'Train', 'Channel', 'Match Distance (voxels)', 'Convert FIJI Coords', 'Training Directory', 'Validation Directory', 'Output Classifier'};
-    channelTable.ColumnEditable = [true, false, true, true, false, false, true];
-    channelTable.ColumnWidth = {55, 80, 145, 135, '1x', '1x', 200};
-    channelTable.Data = {true, 'Channel 1', 2, false, '', '', 'classifier_ch1.mat'};
-
     logText = uitextarea(rightGrid, 'Editable', 'off');
-    logText.Value = {'SNAP_train ready. Load parameter file, configure per-channel train/validation directories, then click Train Selected Channels.'};
+    logText.Value = {['SNAP_train ready. Load a template parameter file or set per-channel parameter files, ' ...
+        'configure each channel tab, then click Train Selected Channels.']};
 
     actionPanel = uipanel(rightGrid, 'BorderType', 'none');
     actionGrid = uigridlayout(actionPanel, [1, 2]);
@@ -513,31 +491,22 @@ function out = runTrainingUI()
     trainBtn = uibutton(actionGrid, 'Text', 'Train Selected Channels', 'FontWeight', 'bold');
     closeBtn = uibutton(actionGrid, 'Text', 'Close', 'ButtonPushedFcn', @(~,~) close(fig));
 
-    % Store handles/state
+    % Hidden table retained as a robust backend store for core per-channel fields.
+    channelTable = uitable(fig, 'Visible', 'off');
+    channelTable.ColumnName = {'Train', 'Channel Slot', 'Match Distance (voxels)', ...
+        'Convert FIJI Coords', 'Parameter File', 'Training Directory', 'Validation Directory', 'Output Classifier'};
+    channelTable.ColumnEditable = [true, false, true, true, false, false, false, true];
+    channelTable.Data = {true, 'Channel 1', 2, false, '', '', '', 'classifier_ch1.mat'};
+
     handles = struct();
     handles.fig = fig;
     handles.paramPathEdit = paramPathEdit;
     handles.detectedChannelsLabel = detectedChannelsLabel;
+    handles.channelCountValueLabel = channelCountValueLabel;
     handles.detectedNumChannels = 1;
-    handles.outDirEdit = outDirEdit;
-    handles.optimizeCheck = optimizeCheck;
-    handles.sweepReportCheck = sweepReportCheck;
-    handles.kernelDrop = kernelDrop;
-    handles.boxConstraintInput = boxConstraintInput;
-    handles.kernelScaleInput = kernelScaleInput;
-    handles.polyOrderInput = polyOrderInput;
-    handles.standardizeCheck = standardizeCheck;
-    handles.crossValidateCheck = crossValidateCheck;
-    handles.kFoldInput = kFoldInput;
-    handles.balanceClassCheck = balanceClassCheck;
-    handles.sweepKernelsInput = sweepKernelsInput;
-    handles.sweepBoxInput = sweepBoxInput;
-    handles.sweepScaleInput = sweepScaleInput;
-    handles.sweepPolyInput = sweepPolyInput;
-    handles.selectFeaturesBtn = selectFeaturesBtn;
-    handles.loadFeaturePackBtn = loadFeaturePackBtn;
-    handles.featureCountLabel = featureCountLabel;
-    handles.featureListArea = featureListArea;
+    handles.channelTabGroup = channelTabGroup;
+    handles.channelTabs = struct([]);
+    handles.channelAdvancedConfigs = repmat(defaultChannelAdvancedConfig(), 1, 1);
     handles.channelFeatureConfigs = repmat(defaultChannelFeatureConfig(), 1, 1);
     handles.channelTable = channelTable;
     handles.selectedChannelRow = 1;
@@ -547,24 +516,12 @@ function out = runTrainingUI()
     handles.loadedParams = struct();
     guidata(fig, handles);
 
-    % Callbacks
     paramBrowseBtn.ButtonPushedFcn = @(~,~) onBrowseParameterFile(fig);
-    outBrowseBtn.ButtonPushedFcn = @(~,~) onBrowseDirectory(fig, 'outDirEdit', 'Select output directory');
-    browseTrainSelectedBtn.ButtonPushedFcn = @(~,~) onBrowseSelectedChannelDirectory(fig, 'train');
-    browseValSelectedBtn.ButtonPushedFcn = @(~,~) onBrowseSelectedChannelDirectory(fig, 'validation');
-    if isprop(channelTable, 'SelectionChangedFcn')
-        channelTable.SelectionChangedFcn = @(~,evt) onChannelTableSelectionChanged(fig, evt);
-    elseif isprop(channelTable, 'CellSelectionCallback')
-        channelTable.CellSelectionCallback = @(~,evt) onChannelTableSelectionChanged(fig, evt);
-    end
-    selectFeaturesBtn.ButtonPushedFcn = @(~,~) onSelectTrainingFeatures(fig);
-    loadFeaturePackBtn.ButtonPushedFcn = @(~,~) onLoadExpressionPack(fig);
-    optimizeCheck.ValueChangedFcn = @(~,~) updateOptimizationControlState(fig);
+    decreaseChannelBtn.ButtonPushedFcn = @(~,~) onAdjustChannelCount(fig, -1);
+    increaseChannelBtn.ButtonPushedFcn = @(~,~) onAdjustChannelCount(fig, +1);
     trainBtn.ButtonPushedFcn = @(~,~) onTrainSelectedChannels(fig);
 
     updateChannelTableFromDetectedChannels(fig, 1, true);
-    refreshTrainingFeatureSummary(fig);
-    updateOptimizationControlState(fig);
     setTrainProgressVisual(fig, 0, 'Ready to begin', [0 0 0]);
 
     out = struct('status', 'launched', 'figure', fig);
@@ -587,178 +544,56 @@ function onBrowseParameterFile(fig)
     end
 
     handles.loadedParams = params;
-    if isfield(handles, 'selectFeaturesBtn') && isgraphics(handles.selectFeaturesBtn)
-        handles.selectFeaturesBtn.Enable = 'on';
-    end
-    if isfield(handles, 'loadFeaturePackBtn') && isgraphics(handles.loadFeaturePackBtn)
-        handles.loadFeaturePackBtn.Enable = 'on';
+    if isfield(handles, 'channelCountValueLabel') && isgraphics(handles.channelCountValueLabel)
+        handles.channelCountValueLabel.Text = num2str(numChannels);
     end
     guidata(fig, handles);
     updateChannelTableFromDetectedChannels(fig, numChannels, true);
     refreshTrainingFeatureSummary(fig, 1);
-    appendTrainLog(fig, sprintf('Loaded parameter file: %s (numChannels=%d)', file, numChannels));
+    appendTrainLog(fig, sprintf('Loaded template parameter file: %s (detected channels=%d)', file, numChannels));
 end
 
-function onBrowseDirectory(fig, fieldName, dialogTitle)
+function onAdjustChannelCount(fig, delta)
     handles = guidata(fig);
-    startPath = pwd;
-    currentValue = strtrim(char(string(handles.(fieldName).Value)));
-    if ~isempty(currentValue) && isfolder(currentValue)
-        startPath = currentValue;
+    currentN = max(1, round(getfieldwithdefault(handles, 'detectedNumChannels', 1)));
+    if nargin < 2 || ~isfinite(delta)
+        delta = 0;
     end
-    selectedPath = uigetdir(startPath, dialogTitle);
-    if isequal(selectedPath, 0)
-        return;
-    end
-    handles.(fieldName).Value = selectedPath;
-    guidata(fig, handles);
-end
-
-function onChannelTableSelectionChanged(fig, eventData)
-    handles = guidata(fig);
-    row = [];
-
-    % Different MATLAB versions expose different selection payloads.
-    if nargin >= 2 && ~isempty(eventData)
-        row = extractSelectedRowFromTableEvent(eventData);
-    end
-
-    if isempty(row) && isprop(handles.channelTable, 'Selection')
-        row = extractSelectedRowFromSelectionValue(handles.channelTable.Selection);
-    end
-
-    if ~isempty(row) && isfinite(row) && row >= 1
-        handles.selectedChannelRow = round(row);
-        guidata(fig, handles);
-        try
-            refreshTrainingFeatureSummary(fig, parseChannelFromRowValue(handles.channelTable.Data{handles.selectedChannelRow, 2}));
-        catch
-            refreshTrainingFeatureSummary(fig);
-        end
-    end
-end
-
-function row = extractSelectedRowFromTableEvent(eventData)
-    row = [];
-
-    if isprop(eventData, 'Indices')
-        row = extractSelectedRowFromSelectionValue(eventData.Indices);
-    elseif isprop(eventData, 'Selection')
-        row = extractSelectedRowFromSelectionValue(eventData.Selection);
-    elseif isprop(eventData, 'SelectedCells')
-        row = extractSelectedRowFromSelectionValue(eventData.SelectedCells);
-    elseif isprop(eventData, 'CurrentSelection')
-        row = extractSelectedRowFromSelectionValue(eventData.CurrentSelection);
-    elseif isstruct(eventData)
-        if isfield(eventData, 'Indices')
-            row = extractSelectedRowFromSelectionValue(eventData.Indices);
-        elseif isfield(eventData, 'Selection')
-            row = extractSelectedRowFromSelectionValue(eventData.Selection);
-        elseif isfield(eventData, 'SelectedCells')
-            row = extractSelectedRowFromSelectionValue(eventData.SelectedCells);
-        elseif isfield(eventData, 'CurrentSelection')
-            row = extractSelectedRowFromSelectionValue(eventData.CurrentSelection);
-        end
-    end
-end
-
-function row = extractSelectedRowFromSelectionValue(sel)
-    row = [];
-    if isempty(sel)
-        return;
-    end
-
-    if iscell(sel)
-        if ~isempty(sel)
-            row = extractSelectedRowFromSelectionValue(sel{1});
-        end
-        return;
-    end
-
-    if isnumeric(sel)
-        if size(sel, 2) >= 1
-            row = sel(1, 1);
-        elseif isvector(sel)
-            row = sel(1);
-        end
-        return;
-    end
-
-    if isstruct(sel)
-        if isfield(sel, 'Indices')
-            row = extractSelectedRowFromSelectionValue(sel.Indices);
-        elseif isfield(sel, 'Selection')
-            row = extractSelectedRowFromSelectionValue(sel.Selection);
-        end
-        return;
-    end
-
-    if isobject(sel)
-        if isprop(sel, 'Indices')
-            row = extractSelectedRowFromSelectionValue(sel.Indices);
-        elseif isprop(sel, 'Selection')
-            row = extractSelectedRowFromSelectionValue(sel.Selection);
-        end
-    end
-end
-
-function onBrowseSelectedChannelDirectory(fig, dirType)
-    handles = guidata(fig);
-    data = handles.channelTable.Data;
-    if isempty(data)
-        uialert(fig, 'No channels available. Load a valid parameter file first.', 'No Channels');
-        return;
-    end
-
-    row = handles.selectedChannelRow;
-    row = max(1, min(size(data, 1), row));
-    channelIdx = parseChannelFromRowValue(data{row, 2});
-
-    switch lower(dirType)
-        case 'train'
-            colIdx = 5;
-            dialogTitle = sprintf('Select training directory for Channel %d', channelIdx);
-        case 'validation'
-            colIdx = 6;
-            dialogTitle = sprintf('Select validation directory for Channel %d', channelIdx);
-        otherwise
-            error('Unknown channel directory type: %s', dirType);
-    end
-
-    startPath = pwd;
-    existingValue = strtrim(char(string(data{row, colIdx})));
-    if ~isempty(existingValue) && isfolder(existingValue)
-        startPath = existingValue;
-    end
-
-    selectedPath = uigetdir(startPath, dialogTitle);
-    if isequal(selectedPath, 0)
-        return;
-    end
-
-    data{row, colIdx} = selectedPath;
-    handles.channelTable.Data = data;
-    guidata(fig, handles);
+    n = max(1, min(12, currentN + round(delta)));
+    updateChannelTableFromDetectedChannels(fig, n, false);
+    appendTrainLog(fig, sprintf('Adjusted channel tabs to %d channel(s).', n));
 end
 
 function updateChannelTableFromDetectedChannels(fig, detectedChannels, resetOutputs)
     handles = guidata(fig);
+    handles = syncTabsToState(handles);
+
     n = max(1, round(detectedChannels));
     handles.detectedNumChannels = n;
     handles.detectedChannelsLabel.Text = num2str(n);
+    if isfield(handles, 'channelCountValueLabel') && isgraphics(handles.channelCountValueLabel)
+        handles.channelCountValueLabel.Text = num2str(n);
+    end
 
     oldFeatureCfgs = repmat(defaultChannelFeatureConfig(), 1, 0);
     if isfield(handles, 'channelFeatureConfigs') && ~isempty(handles.channelFeatureConfigs)
         oldFeatureCfgs = handles.channelFeatureConfigs;
     end
 
+    oldAdvancedCfgs = repmat(defaultChannelAdvancedConfig(), 1, 0);
+    if isfield(handles, 'channelAdvancedConfigs') && ~isempty(handles.channelAdvancedConfigs)
+        oldAdvancedCfgs = handles.channelAdvancedConfigs;
+    end
+
     oldData = handles.channelTable.Data;
-    newData = cell(n, 7);
+    templateParamPath = strtrim(char(string(handles.paramPathEdit.Value)));
+    newData = cell(n, 8);
 
     for ch = 1:n
         channelName = sprintf('Channel %d', ch);
         matchDistance = 2;
         convertFiji = false;
+        paramFile = templateParamPath;
         trainDir = '';
         valDir = '';
         defaultOutput = sprintf('classifier_ch%d.mat', ch);
@@ -769,7 +604,20 @@ function updateChannelTableFromDetectedChannels(fig, detectedChannels, resetOutp
             rowIdx = find(strcmp(oldData(:, 2), channelName), 1);
             if ~isempty(rowIdx)
                 trainFlag = isSelectedChannelFlag(oldData{rowIdx, 1});
-                if size(oldData, 2) >= 7
+                if size(oldData, 2) >= 8
+                    matchDistance = normalizeScalarNumeric(oldData{rowIdx, 3}, 2);
+                    if ~isfinite(matchDistance) || matchDistance < 0
+                        matchDistance = 2;
+                    end
+                    convertFiji = isSelectedChannelFlag(oldData{rowIdx, 4});
+                    paramFile = strtrim(char(string(oldData{rowIdx, 5})));
+                    trainDir = char(string(oldData{rowIdx, 6}));
+                    valDir = char(string(oldData{rowIdx, 7}));
+                    if ~resetOutputs && ~isempty(oldData{rowIdx, 8})
+                        outputName = char(string(oldData{rowIdx, 8}));
+                    end
+                elseif size(oldData, 2) >= 7
+                    % Previous layout before per-channel parameter-file field.
                     matchDistance = normalizeScalarNumeric(oldData{rowIdx, 3}, 2);
                     if ~isfinite(matchDistance) || matchDistance < 0
                         matchDistance = 2;
@@ -797,14 +645,21 @@ function updateChannelTableFromDetectedChannels(fig, detectedChannels, resetOutp
                 end
             end
         end
+        if isempty(strtrim(paramFile))
+            paramFile = templateParamPath;
+        end
+        if resetOutputs && ~isempty(templateParamPath)
+            paramFile = templateParamPath;
+        end
 
         newData{ch, 1} = trainFlag;
         newData{ch, 2} = channelName;
         newData{ch, 3} = matchDistance;
         newData{ch, 4} = convertFiji;
-        newData{ch, 5} = trainDir;
-        newData{ch, 6} = valDir;
-        newData{ch, 7} = outputName;
+        newData{ch, 5} = paramFile;
+        newData{ch, 6} = trainDir;
+        newData{ch, 7} = valDir;
+        newData{ch, 8} = outputName;
     end
 
     newFeatureCfgs = repmat(defaultChannelFeatureConfig(), 1, n);
@@ -814,41 +669,675 @@ function updateChannelTableFromDetectedChannels(fig, detectedChannels, resetOutp
         end
     end
 
+    newAdvancedCfgs = repmat(defaultChannelAdvancedConfig(), 1, n);
+    for ch = 1:n
+        if ch <= numel(oldAdvancedCfgs)
+            newAdvancedCfgs(ch) = normalizeChannelAdvancedConfig(oldAdvancedCfgs(ch));
+        end
+        if resetOutputs
+            newAdvancedCfgs(ch).outputDirectory = '';
+        end
+    end
+
     handles.channelFeatureConfigs = newFeatureCfgs;
+    handles.channelAdvancedConfigs = newAdvancedCfgs;
     handles.channelTable.Data = newData;
     handles.selectedChannelRow = max(1, min(n, handles.selectedChannelRow));
     guidata(fig, handles);
+
+    rebuildChannelTabs(fig);
+    updateOptimizationControlState(fig);
 end
 
-function updateOptimizationControlState(fig)
+function updateOptimizationControlState(fig, channelIdx)
     handles = guidata(fig);
-    useOptimization = handles.optimizeCheck.Value;
+    if ~isfield(handles, 'channelTabs') || isempty(handles.channelTabs)
+        return;
+    end
 
-    manualControls = { ...
-        handles.kernelDrop, handles.boxConstraintInput, handles.kernelScaleInput, ...
-        handles.polyOrderInput, handles.standardizeCheck, handles.crossValidateCheck, ...
-        handles.kFoldInput, handles.balanceClassCheck ...
-    };
-    sweepControls = { ...
-        handles.sweepKernelsInput, handles.sweepBoxInput, ...
-        handles.sweepScaleInput, handles.sweepPolyInput, handles.sweepReportCheck ...
-    };
-
-    if useOptimization
-        manualState = 'off';
-        sweepState = 'on';
+    if nargin < 2 || isempty(channelIdx)
+        idxList = 1:numel(handles.channelTabs);
     else
-        manualState = 'on';
-        sweepState = 'off';
+        idxList = unique(round(channelIdx(:)'));
     end
 
-    for i = 1:numel(manualControls)
-        manualControls{i}.Enable = manualState;
-    end
-    for i = 1:numel(sweepControls)
-        sweepControls{i}.Enable = sweepState;
+    for ch = idxList
+        if ch < 1 || ch > numel(handles.channelTabs)
+            continue;
+        end
+        tab = handles.channelTabs(ch);
+        if ~isfield(tab, 'optimizeCheck') || ~isgraphics(tab.optimizeCheck)
+            continue;
+        end
+
+        useOptimization = logical(tab.optimizeCheck.Value);
+        if useOptimization
+            manualState = 'off';
+            sweepState = 'on';
+        else
+            manualState = 'on';
+            sweepState = 'off';
+        end
+
+        manualControls = { ...
+            tab.kernelDrop, tab.boxConstraintInput, tab.kernelScaleInput, ...
+            tab.polyOrderInput, tab.standardizeCheck, tab.crossValidateCheck, ...
+            tab.kFoldInput, tab.balanceClassCheck ...
+        };
+        sweepControls = { ...
+            tab.sweepKernelsInput, tab.sweepBoxInput, tab.sweepScaleInput, ...
+            tab.sweepPolyInput, tab.sweepTieHandlingDrop, tab.sweepReportCheck ...
+        };
+
+        for i = 1:numel(manualControls)
+            if isgraphics(manualControls{i})
+                manualControls{i}.Enable = manualState;
+            end
+        end
+        for i = 1:numel(sweepControls)
+            if isgraphics(sweepControls{i})
+                sweepControls{i}.Enable = sweepState;
+            end
+        end
     end
 
+    guidata(fig, handles);
+end
+
+function cfg = defaultChannelAdvancedConfig()
+    cfg = struct( ...
+        'outputDirectory', '', ...
+        'optimizeWithSweep', true, ...
+        'includeSweepReport', true, ...
+        'kernelFunction', 'rbf', ...
+        'boxConstraint', 1, ...
+        'kernelScale', 'auto', ...
+        'polynomialOrder', 3, ...
+        'standardize', true, ...
+        'crossValidate', true, ...
+        'kFold', 5, ...
+        'balanceClassBins', true, ...
+        'sweepKernels', 'linear, rbf, polynomial', ...
+        'sweepBoxConstraints', '0.1, 1, 10', ...
+        'sweepKernelScales', 'auto, 0.5, 1, 2', ...
+        'sweepPolynomialOrders', '2, 3, 4', ...
+        'sweepTieHandlingLabel', 'Prefer simpler model for ties');
+end
+
+function cfg = normalizeChannelAdvancedConfig(rawCfg)
+    cfg = defaultChannelAdvancedConfig();
+    if ~isstruct(rawCfg)
+        return;
+    end
+
+    fields = fieldnames(cfg);
+    for i = 1:numel(fields)
+        fn = fields{i};
+        if isfield(rawCfg, fn)
+            cfg.(fn) = rawCfg.(fn);
+        end
+    end
+
+    cfg.outputDirectory = strtrim(char(string(cfg.outputDirectory)));
+    cfg.optimizeWithSweep = logical(cfg.optimizeWithSweep);
+    cfg.includeSweepReport = logical(cfg.includeSweepReport);
+    cfg.kernelFunction = char(string(cfg.kernelFunction));
+    cfg.kernelScale = char(string(cfg.kernelScale));
+    cfg.polynomialOrder = max(2, round(normalizeScalarNumeric(cfg.polynomialOrder, 3)));
+    cfg.boxConstraint = normalizeScalarNumeric(cfg.boxConstraint, 1);
+    if ~isfinite(cfg.boxConstraint) || cfg.boxConstraint <= 0
+        cfg.boxConstraint = 1;
+    end
+    cfg.standardize = logical(cfg.standardize);
+    cfg.crossValidate = logical(cfg.crossValidate);
+    cfg.kFold = max(2, round(normalizeScalarNumeric(cfg.kFold, 5)));
+    cfg.balanceClassBins = logical(cfg.balanceClassBins);
+    cfg.sweepKernels = char(string(cfg.sweepKernels));
+    cfg.sweepBoxConstraints = char(string(cfg.sweepBoxConstraints));
+    cfg.sweepKernelScales = char(string(cfg.sweepKernelScales));
+    cfg.sweepPolynomialOrders = char(string(cfg.sweepPolynomialOrders));
+    cfg.sweepTieHandlingLabel = char(string(cfg.sweepTieHandlingLabel));
+    if isempty(cfg.sweepTieHandlingLabel)
+        cfg.sweepTieHandlingLabel = 'Prefer simpler model for ties';
+    end
+end
+
+function cfg = getChannelAdvancedConfig(handles, channelIdx)
+    cfg = defaultChannelAdvancedConfig();
+    if ~isfield(handles, 'channelAdvancedConfigs') || isempty(handles.channelAdvancedConfigs)
+        return;
+    end
+    idx = max(1, round(channelIdx));
+    if idx <= numel(handles.channelAdvancedConfigs)
+        cfg = normalizeChannelAdvancedConfig(handles.channelAdvancedConfigs(idx));
+    end
+end
+
+function handles = setChannelAdvancedConfig(handles, channelIdx, cfg)
+    idx = max(1, round(channelIdx));
+    cfg = normalizeChannelAdvancedConfig(cfg);
+    if ~isfield(handles, 'channelAdvancedConfigs') || isempty(handles.channelAdvancedConfigs)
+        handles.channelAdvancedConfigs = repmat(defaultChannelAdvancedConfig(), 1, idx);
+    elseif numel(handles.channelAdvancedConfigs) < idx
+        nExisting = numel(handles.channelAdvancedConfigs);
+        handles.channelAdvancedConfigs(nExisting+1:idx) = ...
+            repmat(defaultChannelAdvancedConfig(), 1, idx - nExisting);
+    end
+    handles.channelAdvancedConfigs(idx) = cfg;
+end
+
+function handles = syncTabsToState(handles)
+    if ~isfield(handles, 'channelTabs') || isempty(handles.channelTabs) || ...
+            ~isfield(handles, 'channelTable') || ~isgraphics(handles.channelTable)
+        return;
+    end
+
+    data = handles.channelTable.Data;
+    if isempty(data)
+        return;
+    end
+
+    for ch = 1:min(numel(handles.channelTabs), size(data, 1))
+        tab = handles.channelTabs(ch);
+        if ~isstruct(tab) || ~isfield(tab, 'tab') || ~isgraphics(tab.tab)
+            continue;
+        end
+
+        data{ch, 1} = logical(tab.trainEnableCheck.Value);
+        data{ch, 2} = sprintf('Channel %d', ch);
+        data{ch, 3} = tab.matchDistanceInput.Value;
+        data{ch, 4} = logical(tab.convertFijiCheck.Value);
+        data{ch, 5} = strtrim(char(string(tab.paramFileEdit.Value)));
+        data{ch, 6} = strtrim(char(string(tab.trainDirEdit.Value)));
+        data{ch, 7} = strtrim(char(string(tab.valDirEdit.Value)));
+        outName = strtrim(char(string(tab.outputNameEdit.Value)));
+        if isempty(outName)
+            outName = sprintf('classifier_ch%d.mat', ch);
+        end
+        data{ch, 8} = outName;
+
+        adv = getChannelAdvancedConfig(handles, ch);
+        adv.outputDirectory = strtrim(char(string(tab.outputDirEdit.Value)));
+        adv.optimizeWithSweep = logical(tab.optimizeCheck.Value);
+        adv.includeSweepReport = logical(tab.sweepReportCheck.Value);
+        adv.kernelFunction = char(string(tab.kernelDrop.Value));
+        adv.boxConstraint = tab.boxConstraintInput.Value;
+        adv.kernelScale = char(string(tab.kernelScaleInput.Value));
+        adv.polynomialOrder = tab.polyOrderInput.Value;
+        adv.standardize = logical(tab.standardizeCheck.Value);
+        adv.crossValidate = logical(tab.crossValidateCheck.Value);
+        adv.kFold = tab.kFoldInput.Value;
+        adv.balanceClassBins = logical(tab.balanceClassCheck.Value);
+        adv.sweepKernels = char(string(tab.sweepKernelsInput.Value));
+        adv.sweepBoxConstraints = char(string(tab.sweepBoxInput.Value));
+        adv.sweepKernelScales = char(string(tab.sweepScaleInput.Value));
+        adv.sweepPolynomialOrders = char(string(tab.sweepPolyInput.Value));
+        adv.sweepTieHandlingLabel = char(string(tab.sweepTieHandlingDrop.Value));
+        handles = setChannelAdvancedConfig(handles, ch, adv);
+    end
+
+    handles.channelTable.Data = data;
+end
+
+function rebuildChannelTabs(fig)
+    handles = guidata(fig);
+    if ~isfield(handles, 'channelTabGroup') || ~isgraphics(handles.channelTabGroup)
+        return;
+    end
+    if ~isfield(handles, 'channelTable') || ~isgraphics(handles.channelTable)
+        return;
+    end
+
+    handles = syncTabsToState(handles);
+    data = handles.channelTable.Data;
+    if isempty(data)
+        guidata(fig, handles);
+        return;
+    end
+
+    selectedChannel = max(1, min(size(data, 1), handles.selectedChannelRow));
+    existingTabs = handles.channelTabGroup.Children;
+    for i = 1:numel(existingTabs)
+        if isgraphics(existingTabs(i))
+            delete(existingTabs(i));
+        end
+    end
+
+    n = size(data, 1);
+    channelTabs = repmat(emptyChannelTabRecord(), 1, n);
+    hasLoadedParams = isfield(handles, 'loadedParams') && ...
+        isstruct(handles.loadedParams) && ~isempty(fieldnames(handles.loadedParams));
+
+    for ch = 1:n
+        coreTrain = isSelectedChannelFlag(data{ch, 1});
+        coreMatchDist = normalizeScalarNumeric(data{ch, 3}, 2);
+        if ~isfinite(coreMatchDist) || coreMatchDist < 0
+            coreMatchDist = 2;
+        end
+        coreConvertFiji = isSelectedChannelFlag(data{ch, 4});
+        coreParamPath = '';
+        coreTrainDir = '';
+        coreValDir = '';
+        coreOutName = '';
+        if size(data, 2) >= 8
+            coreParamPath = char(string(data{ch, 5}));
+            coreTrainDir = char(string(data{ch, 6}));
+            coreValDir = char(string(data{ch, 7}));
+            coreOutName = char(string(data{ch, 8}));
+        else
+            coreTrainDir = char(string(data{ch, 5}));
+            coreValDir = char(string(data{ch, 6}));
+            coreOutName = char(string(data{ch, 7}));
+            coreParamPath = strtrim(char(string(handles.paramPathEdit.Value)));
+        end
+        if isempty(strtrim(coreParamPath))
+            coreParamPath = strtrim(char(string(handles.paramPathEdit.Value)));
+        end
+        if isempty(strtrim(coreOutName))
+            coreOutName = sprintf('classifier_ch%d.mat', ch);
+        end
+
+        adv = getChannelAdvancedConfig(handles, ch);
+
+        tab = uitab(handles.channelTabGroup, 'Title', sprintf('Channel %d', ch));
+        if isprop(tab, 'Scrollable')
+            tab.Scrollable = 'on';
+        end
+        tabRootGrid = uigridlayout(tab, [1, 1]);
+        tabRootGrid.RowHeight = {'1x'};
+        tabRootGrid.ColumnWidth = {'1x'};
+        tabRootGrid.Padding = [0 0 0 0];
+        tabRootGrid.RowSpacing = 0;
+        tabRootGrid.ColumnSpacing = 0;
+        tabContainer = uipanel(tabRootGrid, 'BorderType', 'none');
+        if isprop(tabContainer, 'Scrollable')
+            tabContainer.Scrollable = 'on';
+        end
+        tabGrid = uigridlayout(tabContainer, [7, 1]);
+        tabGrid.RowHeight = {'fit', 'fit', 'fit', 180, 'fit', 'fit', 'fit'};
+        tabGrid.Padding = [8 8 8 8];
+        tabGrid.RowSpacing = 7;
+
+        generalPanel = uipanel(tabGrid, 'Title', 'Core');
+        generalGrid = uigridlayout(generalPanel, [2, 3]);
+        generalGrid.ColumnWidth = {'fit', 'fit', 120};
+        generalGrid.RowHeight = {'fit', 'fit'};
+        generalGrid.Padding = [6 6 6 6];
+        trainEnableCheck = uicheckbox(generalGrid, 'Text', 'Train this channel', 'Value', coreTrain);
+        trainEnableCheck.Layout.Row = 1;
+        trainEnableCheck.Layout.Column = 1;
+        matchDistanceLabel = uilabel(generalGrid, 'Text', 'Match Distance (voxels):');
+        matchDistanceLabel.Layout.Row = 1;
+        matchDistanceLabel.Layout.Column = 2;
+        matchDistanceInput = uieditfield(generalGrid, 'numeric', 'Value', coreMatchDist, 'LowerLimit', 0);
+        matchDistanceInput.Layout.Row = 1;
+        matchDistanceInput.Layout.Column = 3;
+        convertFijiCheck = uicheckbox(generalGrid, 'Text', 'Convert FIJI Coords', 'Value', coreConvertFiji);
+        convertFijiCheck.Layout.Row = 2;
+        convertFijiCheck.Layout.Column = [1 3];
+
+        dataPanel = uipanel(tabGrid, 'Title', 'Channel Inputs');
+        dataGrid = uigridlayout(dataPanel, [3, 3]);
+        dataGrid.ColumnWidth = {'fit', '1x', 'fit'};
+        dataGrid.RowHeight = {'fit', 'fit', 'fit'};
+        dataGrid.Padding = [6 6 6 6];
+        paramLabel = uilabel(dataGrid, 'Text', 'Parameter File:');
+        paramLabel.Layout.Row = 1;
+        paramLabel.Layout.Column = 1;
+        paramFileEdit = uieditfield(dataGrid, 'text', 'Editable', 'off', 'Value', coreParamPath);
+        paramFileEdit.Layout.Row = 1;
+        paramFileEdit.Layout.Column = 2;
+        paramBrowseBtn = uibutton(dataGrid, 'Text', 'Browse');
+        paramBrowseBtn.Layout.Row = 1;
+        paramBrowseBtn.Layout.Column = 3;
+        trainDirLabel = uilabel(dataGrid, 'Text', 'Training Directory:');
+        trainDirLabel.Layout.Row = 2;
+        trainDirLabel.Layout.Column = 1;
+        trainDirEdit = uieditfield(dataGrid, 'text', 'Editable', 'off', 'Value', coreTrainDir);
+        trainDirEdit.Layout.Row = 2;
+        trainDirEdit.Layout.Column = 2;
+        trainBrowseBtn = uibutton(dataGrid, 'Text', 'Browse');
+        trainBrowseBtn.Layout.Row = 2;
+        trainBrowseBtn.Layout.Column = 3;
+        valDirLabel = uilabel(dataGrid, 'Text', 'Validation Directory:');
+        valDirLabel.Layout.Row = 3;
+        valDirLabel.Layout.Column = 1;
+        valDirEdit = uieditfield(dataGrid, 'text', 'Editable', 'off', 'Value', coreValDir);
+        valDirEdit.Layout.Row = 3;
+        valDirEdit.Layout.Column = 2;
+        valBrowseBtn = uibutton(dataGrid, 'Text', 'Browse');
+        valBrowseBtn.Layout.Row = 3;
+        valBrowseBtn.Layout.Column = 3;
+
+        outputPanel = uipanel(tabGrid, 'Title', 'Output');
+        outputGrid = uigridlayout(outputPanel, [2, 3]);
+        outputGrid.ColumnWidth = {'fit', '1x', 'fit'};
+        outputGrid.RowHeight = {'fit', 'fit'};
+        outputGrid.Padding = [6 6 6 6];
+        uilabel(outputGrid, 'Text', 'Output Directory:');
+        outputDirEdit = uieditfield(outputGrid, 'text', 'Editable', 'off', 'Value', adv.outputDirectory);
+        outputDirEdit.Layout.Column = 2;
+        outputDirBrowseBtn = uibutton(outputGrid, 'Text', 'Browse');
+        outputDirBrowseBtn.Layout.Column = 3;
+        uilabel(outputGrid, 'Text', 'Classifier File:');
+        outputNameEdit = uieditfield(outputGrid, 'text', 'Value', coreOutName);
+        outputNameEdit.Layout.Column = [2 3];
+
+        featurePanel = uipanel(tabGrid, 'Title', 'Features & Custom Expressions');
+        featureGrid = uigridlayout(featurePanel, [4, 1]);
+        featureGrid.RowHeight = {'fit', 'fit', 'fit', '1x'};
+        featureGrid.Padding = [6 6 6 6];
+        featureGrid.RowSpacing = 4;
+        hasChannelParamFile = ~isempty(strtrim(coreParamPath)) && exist(coreParamPath, 'file') == 2;
+        controlsEnabled = ternaryState(hasLoadedParams || hasChannelParamFile, 'on', 'off');
+        selectFeaturesBtn = uibutton(featureGrid, 'Text', sprintf('Select Features (Channel %d)...', ch), ...
+            'Enable', controlsEnabled);
+        loadFeaturePackBtn = uibutton(featureGrid, 'Text', sprintf('Load Expression Pack (Channel %d)...', ch), ...
+            'Enable', controlsEnabled);
+        featureCountLabel = uilabel(featureGrid, 'Text', sprintf('Channel %d: AUTO (all non-position features)', ch));
+        featureCountLabel.FontColor = [0.45 0.45 0.45];
+        featureListArea = uitextarea(featureGrid, 'Editable', 'off', ...
+            'Value', {'AUTO: all non-position features', 'Custom expressions: none'});
+
+        optimizePanel = uipanel(tabGrid, 'Title', 'Validation Strategy');
+        optimizeGrid = uigridlayout(optimizePanel, [2, 1]);
+        optimizeGrid.ColumnWidth = {'1x'};
+        optimizeGrid.RowHeight = {'fit', 'fit'};
+        optimizeGrid.Padding = [6 6 6 6];
+        optimizeCheck = uicheckbox(optimizeGrid, 'Text', 'Optimize with validation sweep', ...
+            'Value', logical(adv.optimizeWithSweep));
+        sweepReportCheck = uicheckbox(optimizeGrid, 'Text', 'Include sweep report', ...
+            'Value', logical(adv.includeSweepReport));
+        sweepReportCheck.Layout.Row = 2;
+
+        svmPanel = uipanel(tabGrid, 'Title', 'Manual SVM Hyperparameters');
+        svmGrid = uigridlayout(svmPanel, [3, 4]);
+        svmGrid.ColumnWidth = {'fit', '1x', 'fit', '1x'};
+        svmGrid.RowHeight = {'fit', 'fit', 'fit'};
+        svmGrid.Padding = [6 6 6 6];
+        uilabel(svmGrid, 'Text', 'Kernel:');
+        kernelDrop = uidropdown(svmGrid, 'Items', {'rbf', 'linear', 'polynomial'}, ...
+            'Value', char(string(adv.kernelFunction)));
+        kernelDrop.Layout.Column = 2;
+        uilabel(svmGrid, 'Text', 'Box Constraint (C):');
+        boxConstraintInput = uieditfield(svmGrid, 'numeric', ...
+            'Value', normalizeScalarNumeric(adv.boxConstraint, 1), 'LowerLimit', 1e-6);
+        boxConstraintInput.Layout.Column = 4;
+        uilabel(svmGrid, 'Text', 'Kernel Scale:');
+        kernelScaleInput = uieditfield(svmGrid, 'text', 'Value', char(string(adv.kernelScale)));
+        kernelScaleInput.Layout.Column = 2;
+        uilabel(svmGrid, 'Text', 'Polynomial Order:');
+        polyOrderInput = uieditfield(svmGrid, 'numeric', ...
+            'Value', max(2, round(normalizeScalarNumeric(adv.polynomialOrder, 3))), ...
+            'LowerLimit', 2, 'RoundFractionalValues', true);
+        polyOrderInput.Layout.Column = 4;
+        standardizeCheck = uicheckbox(svmGrid, 'Text', 'Z-score normalize', 'Value', logical(adv.standardize));
+        standardizeCheck.Layout.Row = 3;
+        standardizeCheck.Layout.Column = 1;
+        crossValidateCheck = uicheckbox(svmGrid, 'Text', 'Cross-validate', 'Value', logical(adv.crossValidate));
+        crossValidateCheck.Layout.Row = 3;
+        crossValidateCheck.Layout.Column = 2;
+        kFoldInput = uieditfield(svmGrid, 'numeric', ...
+            'Value', max(2, round(normalizeScalarNumeric(adv.kFold, 5))), ...
+            'LowerLimit', 2, 'RoundFractionalValues', true);
+        kFoldInput.Layout.Row = 3;
+        kFoldInput.Layout.Column = 3;
+        balanceClassCheck = uicheckbox(svmGrid, 'Text', 'Balance class bins', 'Value', logical(adv.balanceClassBins));
+        balanceClassCheck.Layout.Row = 3;
+        balanceClassCheck.Layout.Column = 4;
+
+        sweepPanel = uipanel(tabGrid, 'Title', 'Validation Sweep Grid');
+        sweepGrid = uigridlayout(sweepPanel, [5, 2]);
+        sweepGrid.ColumnWidth = {'fit', '1x'};
+        sweepGrid.RowHeight = {'fit', 'fit', 'fit', 'fit', 'fit'};
+        sweepGrid.Padding = [6 6 6 6];
+        uilabel(sweepGrid, 'Text', 'Kernels:');
+        sweepKernelsInput = uieditfield(sweepGrid, 'text', 'Value', char(string(adv.sweepKernels)));
+        uilabel(sweepGrid, 'Text', 'Box Constraints:');
+        sweepBoxInput = uieditfield(sweepGrid, 'text', 'Value', char(string(adv.sweepBoxConstraints)));
+        uilabel(sweepGrid, 'Text', 'Kernel Scales:');
+        sweepScaleInput = uieditfield(sweepGrid, 'text', 'Value', char(string(adv.sweepKernelScales)));
+        uilabel(sweepGrid, 'Text', 'Polynomial Orders:');
+        sweepPolyInput = uieditfield(sweepGrid, 'text', 'Value', char(string(adv.sweepPolynomialOrders)));
+        uilabel(sweepGrid, 'Text', 'Tie Handling:');
+        sweepTieHandlingDrop = uidropdown(sweepGrid, ...
+            'Items', {'Prefer simpler model for ties', 'Prompt me to choose tied best settings', 'Keep first (legacy)'}, ...
+            'Value', char(string(adv.sweepTieHandlingLabel)));
+
+        trainEnableCheck.ValueChangedFcn = @(~,~) onChannelTabCoreChanged(fig, ch);
+        matchDistanceInput.ValueChangedFcn = @(~,~) onChannelTabCoreChanged(fig, ch);
+        convertFijiCheck.ValueChangedFcn = @(~,~) onChannelTabCoreChanged(fig, ch);
+        outputNameEdit.ValueChangedFcn = @(~,~) onChannelTabCoreChanged(fig, ch);
+        paramFileEdit.ValueChangedFcn = @(~,~) onChannelTabCoreChanged(fig, ch);
+
+        paramBrowseBtn.ButtonPushedFcn = @(~,~) onBrowseChannelDirFromTab(fig, ch, 'param');
+        trainBrowseBtn.ButtonPushedFcn = @(~,~) onBrowseChannelDirFromTab(fig, ch, 'train');
+        valBrowseBtn.ButtonPushedFcn = @(~,~) onBrowseChannelDirFromTab(fig, ch, 'validation');
+        outputDirBrowseBtn.ButtonPushedFcn = @(~,~) onBrowseChannelDirFromTab(fig, ch, 'output');
+
+        optimizeCheck.ValueChangedFcn = @(~,~) onChannelOptimizationModeChanged(fig, ch);
+        sweepReportCheck.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        kernelDrop.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        boxConstraintInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        kernelScaleInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        polyOrderInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        standardizeCheck.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        crossValidateCheck.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        kFoldInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        balanceClassCheck.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        sweepKernelsInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        sweepBoxInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        sweepScaleInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        sweepPolyInput.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+        sweepTieHandlingDrop.ValueChangedFcn = @(~,~) onChannelTabAdvancedChanged(fig, ch);
+
+        selectFeaturesBtn.ButtonPushedFcn = @(~,~) onSelectTrainingFeaturesForChannel(fig, ch);
+        loadFeaturePackBtn.ButtonPushedFcn = @(~,~) onLoadExpressionPackForChannel(fig, ch);
+
+        channelTabs(ch).tab = tab;
+        channelTabs(ch).trainEnableCheck = trainEnableCheck;
+        channelTabs(ch).matchDistanceInput = matchDistanceInput;
+        channelTabs(ch).convertFijiCheck = convertFijiCheck;
+        channelTabs(ch).paramFileEdit = paramFileEdit;
+        channelTabs(ch).trainDirEdit = trainDirEdit;
+        channelTabs(ch).valDirEdit = valDirEdit;
+        channelTabs(ch).outputDirEdit = outputDirEdit;
+        channelTabs(ch).outputNameEdit = outputNameEdit;
+        channelTabs(ch).optimizeCheck = optimizeCheck;
+        channelTabs(ch).sweepReportCheck = sweepReportCheck;
+        channelTabs(ch).kernelDrop = kernelDrop;
+        channelTabs(ch).boxConstraintInput = boxConstraintInput;
+        channelTabs(ch).kernelScaleInput = kernelScaleInput;
+        channelTabs(ch).polyOrderInput = polyOrderInput;
+        channelTabs(ch).standardizeCheck = standardizeCheck;
+        channelTabs(ch).crossValidateCheck = crossValidateCheck;
+        channelTabs(ch).kFoldInput = kFoldInput;
+        channelTabs(ch).balanceClassCheck = balanceClassCheck;
+        channelTabs(ch).sweepKernelsInput = sweepKernelsInput;
+        channelTabs(ch).sweepBoxInput = sweepBoxInput;
+        channelTabs(ch).sweepScaleInput = sweepScaleInput;
+        channelTabs(ch).sweepPolyInput = sweepPolyInput;
+        channelTabs(ch).sweepTieHandlingDrop = sweepTieHandlingDrop;
+        channelTabs(ch).selectFeaturesBtn = selectFeaturesBtn;
+        channelTabs(ch).loadFeaturePackBtn = loadFeaturePackBtn;
+        channelTabs(ch).featureCountLabel = featureCountLabel;
+        channelTabs(ch).featureListArea = featureListArea;
+    end
+
+    handles.channelTabs = channelTabs;
+    handles.channelTabGroup.SelectionChangedFcn = @(~,evt) onChannelTabSelectionChanged(fig, evt);
+    guidata(fig, handles);
+
+    if selectedChannel <= numel(channelTabs)
+        try
+            handles.channelTabGroup.SelectedTab = channelTabs(selectedChannel).tab;
+        catch
+            % No-op if setting selected tab fails on some MATLAB builds.
+        end
+    end
+
+    refreshTrainingFeatureSummary(fig);
+    updateOptimizationControlState(fig);
+end
+
+function tabRec = emptyChannelTabRecord()
+    tabRec = struct( ...
+        'tab', [], ...
+        'trainEnableCheck', [], ...
+        'matchDistanceInput', [], ...
+        'convertFijiCheck', [], ...
+        'paramFileEdit', [], ...
+        'trainDirEdit', [], ...
+        'valDirEdit', [], ...
+        'outputDirEdit', [], ...
+        'outputNameEdit', [], ...
+        'optimizeCheck', [], ...
+        'sweepReportCheck', [], ...
+        'kernelDrop', [], ...
+        'boxConstraintInput', [], ...
+        'kernelScaleInput', [], ...
+        'polyOrderInput', [], ...
+        'standardizeCheck', [], ...
+        'crossValidateCheck', [], ...
+        'kFoldInput', [], ...
+        'balanceClassCheck', [], ...
+        'sweepKernelsInput', [], ...
+        'sweepBoxInput', [], ...
+        'sweepScaleInput', [], ...
+        'sweepPolyInput', [], ...
+        'sweepTieHandlingDrop', [], ...
+        'selectFeaturesBtn', [], ...
+        'loadFeaturePackBtn', [], ...
+        'featureCountLabel', [], ...
+        'featureListArea', []);
+end
+
+function out = ternaryState(cond, trueVal, falseVal)
+    if cond
+        out = trueVal;
+    else
+        out = falseVal;
+    end
+end
+
+function onChannelTabSelectionChanged(fig, eventData)
+    handles = guidata(fig);
+    if nargin < 2 || isempty(eventData) || ~isfield(handles, 'channelTabs') || isempty(handles.channelTabs)
+        return;
+    end
+    selectedTab = [];
+    if isprop(eventData, 'NewValue')
+        selectedTab = eventData.NewValue;
+    elseif isstruct(eventData) && isfield(eventData, 'NewValue')
+        selectedTab = eventData.NewValue;
+    end
+    if isempty(selectedTab)
+        return;
+    end
+    for ch = 1:numel(handles.channelTabs)
+        tab = handles.channelTabs(ch);
+        if isfield(tab, 'tab') && isequal(tab.tab, selectedTab)
+            handles.selectedChannelRow = ch;
+            guidata(fig, handles);
+            refreshTrainingFeatureSummary(fig, ch);
+            return;
+        end
+    end
+end
+
+function onChannelTabCoreChanged(fig, channelIdx)
+    handles = guidata(fig);
+    handles = syncTabsToState(handles);
+    handles.selectedChannelRow = max(1, round(channelIdx));
+    guidata(fig, handles);
+end
+
+function onChannelTabAdvancedChanged(fig, channelIdx)
+    handles = guidata(fig);
+    handles = syncTabsToState(handles);
+    handles.selectedChannelRow = max(1, round(channelIdx));
+    guidata(fig, handles);
+end
+
+function onChannelOptimizationModeChanged(fig, channelIdx)
+    onChannelTabAdvancedChanged(fig, channelIdx);
+    updateOptimizationControlState(fig, channelIdx);
+end
+
+function onBrowseChannelDirFromTab(fig, channelIdx, dirType)
+    handles = guidata(fig);
+    if ~isfield(handles, 'channelTabs') || channelIdx < 1 || channelIdx > numel(handles.channelTabs)
+        return;
+    end
+    tab = handles.channelTabs(channelIdx);
+
+    dirType = lower(char(string(dirType)));
+    switch dirType
+        case 'param'
+            existingParam = strtrim(char(string(tab.paramFileEdit.Value)));
+            startDir = pwd;
+            if ~isempty(existingParam)
+                if exist(existingParam, 'file') == 2
+                    startDir = fileparts(existingParam);
+                elseif isfolder(existingParam)
+                    startDir = existingParam;
+                end
+            end
+            [file, path] = uigetfile({'*.mat', 'MAT files (*.mat)'}, ...
+                sprintf('Select parameter file for Channel %d', channelIdx), startDir);
+            if isequal(file, 0)
+                return;
+            end
+            selectedPath = fullfile(path, file);
+            [~, ~, errMsg] = loadTrainingParameters(selectedPath);
+            if ~isempty(errMsg)
+                uialert(fig, errMsg, 'Parameter File Error');
+                return;
+            end
+            tab.paramFileEdit.Value = selectedPath;
+            if isfield(tab, 'selectFeaturesBtn') && isgraphics(tab.selectFeaturesBtn)
+                tab.selectFeaturesBtn.Enable = 'on';
+            end
+            if isfield(tab, 'loadFeaturePackBtn') && isgraphics(tab.loadFeaturePackBtn)
+                tab.loadFeaturePackBtn.Enable = 'on';
+            end
+            handles.channelTabs(channelIdx) = tab;
+            handles = syncTabsToState(handles);
+            guidata(fig, handles);
+            refreshTrainingFeatureSummary(fig, channelIdx);
+            appendTrainLog(fig, sprintf('[Channel %d] Parameter file set: %s', channelIdx, selectedPath));
+            return;
+        case 'train'
+            startPath = strtrim(char(string(tab.trainDirEdit.Value)));
+            dialogTitle = sprintf('Select training directory for Channel %d', channelIdx);
+        case 'validation'
+            startPath = strtrim(char(string(tab.valDirEdit.Value)));
+            dialogTitle = sprintf('Select validation directory for Channel %d', channelIdx);
+        case 'output'
+            startPath = strtrim(char(string(tab.outputDirEdit.Value)));
+            dialogTitle = sprintf('Select output directory for Channel %d', channelIdx);
+        otherwise
+            return;
+    end
+    if isempty(startPath) || ~isfolder(startPath)
+        startPath = pwd;
+    end
+
+    selectedPath = uigetdir(startPath, dialogTitle);
+    if isequal(selectedPath, 0)
+        return;
+    end
+
+    switch dirType
+        case 'train'
+            tab.trainDirEdit.Value = selectedPath;
+        case 'validation'
+            tab.valDirEdit.Value = selectedPath;
+        case 'output'
+            tab.outputDirEdit.Value = selectedPath;
+    end
+    handles.channelTabs(channelIdx) = tab;
+    handles = syncTabsToState(handles);
     guidata(fig, handles);
 end
 
@@ -879,14 +1368,16 @@ function cfg = normalizeChannelFeatureConfig(rawCfg)
         if isempty(rawCfg.customExpressions)
             cfg.customExpressions = struct('name', {}, 'expression', {});
         else
-            ce = rawCfg.customExpressions;
-            validMask = isfield(ce, 'name') & isfield(ce, 'expression');
-            ce = ce(validMask);
-            for k = 1:numel(ce)
-                ce(k).name = char(string(ce(k).name));
-                ce(k).expression = char(string(ce(k).expression));
+            ce = rawCfg.customExpressions(:);
+            if ~(isfield(ce, 'name') && isfield(ce, 'expression'))
+                cfg.customExpressions = struct('name', {}, 'expression', {});
+            else
+                for k = 1:numel(ce)
+                    ce(k).name = char(string(ce(k).name));
+                    ce(k).expression = char(string(ce(k).expression));
+                end
+                cfg.customExpressions = normalizeCustomExpressionList(ce);
             end
-            cfg.customExpressions = ce;
         end
     end
 end
@@ -916,13 +1407,20 @@ end
 
 function onSelectTrainingFeatures(fig)
     handles = guidata(fig);
-    if isempty(handles.loadedParams) || ~isstruct(handles.loadedParams) || isempty(fieldnames(handles.loadedParams))
-        uialert(fig, 'Load a parameter file first so feature availability can be inferred.', 'Missing Parameter File');
+    contextChannel = max(1, handles.selectedChannelRow);
+    onSelectTrainingFeaturesForChannel(fig, contextChannel);
+end
+
+function onSelectTrainingFeaturesForChannel(fig, channelIdx)
+    [handles, channelParams, paramChannelIdx, paramPathUsed, errMsg] = ...
+        resolveContextParamsForChannel(fig, channelIdx);
+    if ~isempty(errMsg)
+        uialert(fig, errMsg, 'Missing Parameter File');
         return;
     end
 
-    [contextChannel, fittingMethod, has3D] = getTrainingFeatureSelectionContext(handles);
-    chanCfg = getChannelFeatureConfig(handles, contextChannel);
+    [~, fittingMethod, has3D] = getTrainingFeatureSelectionContext(handles, paramChannelIdx, channelParams);
+    chanCfg = getChannelFeatureConfig(handles, channelIdx);
     [selected, customExpr, cancelled] = snap_helpers.classification.featureSelectionUI( ...
         fittingMethod, has3D, false, chanCfg.selectedFeatures, chanCfg.customExpressions);
 
@@ -932,18 +1430,26 @@ function onSelectTrainingFeatures(fig)
 
     chanCfg.selectedFeatures = selected;
     chanCfg.customExpressions = customExpr;
-    handles = setChannelFeatureConfig(handles, contextChannel, chanCfg);
+    handles = setChannelFeatureConfig(handles, channelIdx, chanCfg);
+    handles.selectedChannelRow = max(1, round(channelIdx));
     guidata(fig, handles);
-
-    refreshTrainingFeatureSummary(fig, contextChannel);
+    refreshTrainingFeatureSummary(fig, channelIdx);
+    appendTrainLog(fig, sprintf('[Channel %d] Updated feature selection using parameter file: %s', ...
+        channelIdx, paramPathUsed));
 end
 
-function onLoadExpressionPack(fig)
-    handles = guidata(fig);
-    if isempty(handles.loadedParams) || ~isstruct(handles.loadedParams) || isempty(fieldnames(handles.loadedParams))
-        uialert(fig, 'Load a parameter file first so channel context is defined.', 'Missing Parameter File');
-        return;
+function onLoadExpressionPackForChannel(fig, channelIdx)
+    if nargin < 2 || ~isfinite(channelIdx)
+        channelIdx = [];
     end
+    onLoadExpressionPack(fig, channelIdx);
+end
+
+function onLoadExpressionPack(fig, targetChannels)
+    if nargin < 2
+        targetChannels = [];
+    end
+    handles = guidata(fig);
 
     [file, path] = uigetfile({'*.mat', 'Expression pack MAT files (*.mat)'}, ...
         'Select SVM expression pack file');
@@ -965,6 +1471,98 @@ function onLoadExpressionPack(fig)
     end
 
     nRows = size(tableData, 1);
+    targetChannels = unique(round(targetChannels(:)'));
+    targetChannels = targetChannels(isfinite(targetChannels) & targetChannels >= 1 & targetChannels <= nRows);
+    rowChannels = nan(1, nRows);
+    for r = 1:nRows
+        try
+            rowChannels(r) = parseChannelFromRowValue(tableData{r, 2});
+        catch
+            rowChannels(r) = r;
+        end
+    end
+
+    caps = struct([]);
+    paramCtx = repmat(struct('ok', false, 'channel', 1, 'paramPath', '', ...
+        'params', struct(), 'paramChannelIdx', 1), 1, nRows);
+    capabilityErrors = {};
+    for r = 1:nRows
+        ch = rowChannels(r);
+        if ~isempty(targetChannels) && ~ismember(ch, targetChannels)
+            continue;
+        end
+        [handles, params, paramChannelIdx, paramPathUsed, errMsg] = resolveContextParamsForChannel(fig, ch);
+        if ~isempty(errMsg)
+            capabilityErrors{end+1} = sprintf('[Channel %d] %s', ch, errMsg); %#ok<AGROW>
+            continue;
+        end
+        try
+            capLocal = snap_helpers.classification.resolveChannelCapabilities(params, ...
+                'Channels', paramChannelIdx, ...
+                'IncludeFeatureInfo', false);
+            if isempty(capLocal)
+                error('No capability context returned.');
+            end
+            cap = capLocal(1);
+            cap.channelIdx = ch;
+            if isempty(caps)
+                caps = cap;
+            else
+                caps(end+1) = cap; %#ok<AGROW>
+            end
+            paramCtx(r) = struct( ...
+                'ok', true, ...
+                'channel', ch, ...
+                'paramPath', paramPathUsed, ...
+                'params', params, ...
+                'paramChannelIdx', paramChannelIdx);
+        catch ME
+            capabilityErrors{end+1} = sprintf('[Channel %d] Failed to resolve capabilities: %s', ...
+                ch, ME.message); %#ok<AGROW>
+        end
+    end
+    guidata(fig, handles);
+
+    if isempty(caps)
+        uialert(fig, ['Unable to resolve per-channel capabilities for expression-pack validation. ', ...
+            'Set a valid parameter file in each channel tab.'], 'Expression Pack Error');
+        return;
+    end
+
+    validCapChannels = [caps.channelIdx];
+    packForValidation = pack;
+    if numel(pack.channelPacks) > 1
+        keepMask = false(1, numel(pack.channelPacks));
+        for i = 1:numel(pack.channelPacks)
+            chIdx = inferPackChannelIndex(pack.channelPacks(i), i);
+            if ~isfinite(chIdx)
+                continue;
+            end
+            chIdx = round(chIdx);
+            if ~isempty(targetChannels) && ~ismember(chIdx, targetChannels)
+                continue;
+            end
+            keepMask(i) = ismember(chIdx, validCapChannels);
+        end
+        if any(keepMask)
+            packForValidation.channelPacks = pack.channelPacks(keepMask);
+        end
+    end
+
+    [packForValidation, validationReport] = ...
+        snap_helpers.classification.validateExpressionPackAgainstCapabilities( ...
+            packForValidation, caps, 'Mode', 'permissive', 'AutoGuardUnsafeExpressions', true);
+
+    if ~validationReport.success && ~isempty(validationReport.errors)
+        uialert(fig, sprintf('Expression pack is incompatible with configured channel parameter files:\n%s', ...
+            strjoin(validationReport.errors, newline)), 'Expression Pack Error');
+        return;
+    end
+
+    if numel(pack.channelPacks) > 1
+        pack = packForValidation;
+    end
+
     appliedChannels = [];
     skippedChannels = [];
     totalBase = 0;
@@ -982,13 +1580,24 @@ function onLoadExpressionPack(fig)
         end
         channelIdx = round(channelIdx);
 
-        if channelIdx < 1 || channelIdx > nRows
+        if ~isempty(targetChannels) && ~ismember(channelIdx, targetChannels)
+            continue;
+        end
+
+        rowMatch = find(rowChannels == channelIdx, 1, 'first');
+        if isempty(rowMatch)
             skippedChannels(end+1) = channelIdx; %#ok<AGROW>
+            continue;
+        end
+        if ~paramCtx(rowMatch).ok
+            compatLogLines{end+1} = sprintf('[Channel %d] Skipped expression-pack apply: unresolved parameter context.', ...
+                channelIdx); %#ok<AGROW>
             continue;
         end
 
         cfg = normalizeChannelFeatureConfig(chPack);
-        [cfg, compatReport] = sanitizeChannelFeatureConfig(cfg, handles.loadedParams, channelIdx);
+        [cfg, compatReport] = sanitizeChannelFeatureConfig(cfg, ...
+            paramCtx(rowMatch).params, paramCtx(rowMatch).paramChannelIdx);
         handles = setChannelFeatureConfig(handles, channelIdx, cfg);
         appliedChannels(end+1) = channelIdx; %#ok<AGROW>
         totalBase = totalBase + numel(cfg.selectedFeatures);
@@ -1004,6 +1613,53 @@ function onLoadExpressionPack(fig)
             compatLogLines{end+1} = sprintf('[Channel %d] Expression pack dropped incompatible custom expression(s): %s', ... %#ok<AGROW>
                 channelIdx, strjoin(compatReport.droppedCustom, ', '));
         end
+        if isfield(compatReport, 'autoGuarded') && ~isempty(compatReport.autoGuarded)
+            compatLogLines{end+1} = sprintf('[Channel %d] Expression pack auto-guarded expression(s): %s', ... %#ok<AGROW>
+                channelIdx, strjoin(compatReport.autoGuarded, ', '));
+        end
+    end
+
+    if ~isempty(targetChannels)
+        missingTargets = setdiff(targetChannels, appliedChannels, 'stable');
+        if numel(pack.channelPacks) == 1 && ~isempty(missingTargets)
+            cfgSingle = normalizeChannelFeatureConfig(pack.channelPacks(1));
+            for mt = missingTargets
+                rowMatch = find(rowChannels == mt, 1, 'first');
+                if isempty(rowMatch) || ~paramCtx(rowMatch).ok
+                    compatLogLines{end+1} = sprintf('[Channel %d] Skipped expression-pack apply: unresolved parameter context.', ...
+                        mt); %#ok<AGROW>
+                    continue;
+                end
+                cfg = cfgSingle;
+                [cfg, compatReport] = sanitizeChannelFeatureConfig(cfg, ...
+                    paramCtx(rowMatch).params, paramCtx(rowMatch).paramChannelIdx);
+                handles = setChannelFeatureConfig(handles, mt, cfg);
+                appliedChannels(end+1) = mt; %#ok<AGROW>
+                totalBase = totalBase + numel(cfg.selectedFeatures);
+                totalCustom = totalCustom + numel(cfg.customExpressions);
+                if ~isempty(compatReport.droppedBase)
+                    totalDroppedBase = totalDroppedBase + numel(compatReport.droppedBase);
+                    compatLogLines{end+1} = sprintf('[Channel %d] Expression pack dropped incompatible base feature(s): %s', ... %#ok<AGROW>
+                        mt, strjoin(compatReport.droppedBase, ', '));
+                end
+                if ~isempty(compatReport.droppedCustom)
+                    totalDroppedCustom = totalDroppedCustom + numel(compatReport.droppedCustom);
+                    compatLogLines{end+1} = sprintf('[Channel %d] Expression pack dropped incompatible custom expression(s): %s', ... %#ok<AGROW>
+                        mt, strjoin(compatReport.droppedCustom, ', '));
+                end
+            end
+        end
+    end
+
+    for i = 1:numel(validationReport.channelReports)
+        chReport = validationReport.channelReports(i);
+        if ~isfield(chReport, 'channelIdx') || ~isfinite(chReport.channelIdx) || ...
+                ~any(rowChannels == round(chReport.channelIdx))
+            continue;
+        end
+        for w = 1:numel(chReport.warnings)
+            compatLogLines{end+1} = chReport.warnings{w}; %#ok<AGROW>
+        end
     end
 
     if isempty(appliedChannels)
@@ -1018,17 +1674,31 @@ function onLoadExpressionPack(fig)
     end
 
     guidata(fig, handles);
-    refreshTrainingFeatureSummary(fig);
+    if isempty(targetChannels)
+        refreshTrainingFeatureSummary(fig);
+    else
+        for ch = unique(appliedChannels(:)')
+            refreshTrainingFeatureSummary(fig, ch);
+        end
+    end
     appendTrainLog(fig, sprintf('Loaded expression pack: %s', file));
     appendTrainLog(fig, sprintf(['Applied expression pack to channel(s): %s ' ...
         '(total base features=%d, total custom expressions=%d).'], ...
         formatChannelIndexList(appliedChannels), totalBase, totalCustom));
+    appendTrainLog(fig, sprintf('Expression-pack validation mode: %s', validationReport.mode));
+    for i = 1:numel(capabilityErrors)
+        appendTrainLog(fig, capabilityErrors{i});
+    end
     for i = 1:numel(compatLogLines)
         appendTrainLog(fig, compatLogLines{i});
     end
     if totalDroppedBase > 0 || totalDroppedCustom > 0
         appendTrainLog(fig, sprintf('Expression-pack compatibility pruning: dropped base=%d, dropped custom=%d.', ...
             totalDroppedBase, totalDroppedCustom));
+    end
+    if validationReport.nAutoGuarded > 0
+        appendTrainLog(fig, sprintf('Expression-pack safety guard applied to %d expression(s).', ...
+            validationReport.nAutoGuarded));
     end
     if ~isempty(skippedChannels)
         appendTrainLog(fig, sprintf('Skipped channel indices (not present in this UI): %s', ...
@@ -1100,56 +1770,51 @@ function [pack, errMsg] = loadExpressionPackForTraining(packPath)
     rawFields = fieldnames(raw);
     for i = 1:numel(rawFields)
         value = raw.(rawFields{i});
-        if isstruct(value) && isfield(value, 'channelPacks')
+        if isstruct(value) && (isfield(value, 'channelPacks') || ...
+                isfield(value, 'selectedFeatures') || isfield(value, 'customExpressions'))
             candidates{end+1} = value; %#ok<AGROW>
         end
     end
 
+    candidateErrors = {};
     for i = 1:numel(candidates)
         candidate = candidates{i};
-        if numel(candidate) > 1
-            candidate = candidate(1);
-        end
-        if isValidExpressionPackStruct(candidate)
-            pack = candidate;
+        try
+            [pack, normalizeReport] = snap_helpers.classification.normalizeExpressionPack(candidate);
+            if ~isempty(normalizeReport.warnings)
+                warning('SNAP_train:ExpressionPackNormalization', ...
+                    'Expression pack normalized with warnings: %s', ...
+                    strjoin(normalizeReport.warnings, ' | '));
+            end
             return;
+        catch ME
+            candidateErrors{end+1} = ME.message; %#ok<AGROW>
         end
     end
 
     errMsg = sprintf(['File does not contain a valid expression pack.\n' ...
-        'Expected a struct with field "channelPacks" and per-channel entries ', ...
-        'containing selectedFeatures/customExpressions.\n\nFile: %s'], packPath);
-end
-
-function tf = isValidExpressionPackStruct(pack)
-    tf = false;
-    if ~isstruct(pack) || ~isscalar(pack) || ~isfield(pack, 'channelPacks')
-        return;
+        'Expected a pack with channel definitions (selectedFeatures/customExpressions).\n\nFile: %s'], packPath);
+    if ~isempty(candidateErrors)
+        errMsg = sprintf('%s\n\nNormalization errors:\n- %s', ...
+            errMsg, strjoin(candidateErrors, '\n- '));
     end
-
-    cps = pack.channelPacks;
-    if isempty(cps) || ~isstruct(cps)
-        return;
-    end
-
-    hasSelected = isfield(cps, 'selectedFeatures');
-    hasCustom = isfield(cps, 'customExpressions');
-    tf = any(hasSelected | hasCustom);
 end
 
 function refreshTrainingFeatureSummary(fig, contextChannel)
     handles = guidata(fig);
-    if ~isfield(handles, 'featureCountLabel') || ~isgraphics(handles.featureCountLabel) || ...
-            ~isfield(handles, 'featureListArea') || ~isgraphics(handles.featureListArea)
+    if ~isfield(handles, 'channelTabs') || isempty(handles.channelTabs)
         return;
     end
 
     if nargin < 2 || isempty(contextChannel)
-        contextChannel = 1;
-        if isfield(handles, 'channelTable') && isgraphics(handles.channelTable) && ~isempty(handles.channelTable.Data)
-            row = max(1, min(size(handles.channelTable.Data, 1), handles.selectedChannelRow));
-            contextChannel = parseChannelFromRowValue(handles.channelTable.Data{row, 2});
-        end
+        contextChannel = max(1, min(numel(handles.channelTabs), handles.selectedChannelRow));
+    end
+    contextChannel = max(1, min(numel(handles.channelTabs), round(contextChannel)));
+
+    tab = handles.channelTabs(contextChannel);
+    if ~isfield(tab, 'featureCountLabel') || ~isgraphics(tab.featureCountLabel) || ...
+            ~isfield(tab, 'featureListArea') || ~isgraphics(tab.featureListArea)
+        return;
     end
 
     chanCfg = getChannelFeatureConfig(handles, contextChannel);
@@ -1157,21 +1822,22 @@ function refreshTrainingFeatureSummary(fig, contextChannel)
     nCustom = numel(chanCfg.customExpressions);
 
     if nBase == 0 && nCustom == 0
-        handles.featureCountLabel.Text = sprintf('Channel %d: AUTO (all non-position features)', contextChannel);
-        handles.featureCountLabel.FontColor = [0.45 0.45 0.45];
-        handles.featureListArea.Value = { ...
+        tab.featureCountLabel.Text = sprintf('Channel %d: AUTO (all non-position features)', contextChannel);
+        tab.featureCountLabel.FontColor = [0.45 0.45 0.45];
+        tab.featureListArea.Value = { ...
             sprintf('Context channel: %d', contextChannel), ...
             'AUTO: all non-position features', ...
             'Custom expressions: none' ...
         };
+        handles.channelTabs(contextChannel) = tab;
         guidata(fig, handles);
         return;
     end
 
     nTotal = nBase + nCustom;
-    handles.featureCountLabel.Text = sprintf('Channel %d: %d base + %d custom = %d total', ...
+    tab.featureCountLabel.Text = sprintf('Channel %d: %d base + %d custom = %d total', ...
         contextChannel, nBase, nCustom, nTotal);
-    handles.featureCountLabel.FontColor = [0.2 0.6 0.2];
+    tab.featureCountLabel.FontColor = [0.2 0.6 0.2];
 
     lines = {sprintf('Context channel: %d', contextChannel)};
     if nBase > 0
@@ -1186,23 +1852,37 @@ function refreshTrainingFeatureSummary(fig, contextChannel)
             char(string(chanCfg.customExpressions(i).name)), ...
             char(string(chanCfg.customExpressions(i).expression))); %#ok<AGROW>
     end
-    handles.featureListArea.Value = lines;
+    tab.featureListArea.Value = lines;
+    handles.channelTabs(contextChannel) = tab;
     guidata(fig, handles);
 end
 
-function [contextChannel, fittingMethod, has3D] = getTrainingFeatureSelectionContext(handles)
-    contextChannel = 1;
+function [contextChannel, fittingMethod, has3D] = getTrainingFeatureSelectionContext(handles, contextChannel, paramsOverride)
+    if nargin < 2 || isempty(contextChannel) || ~isfinite(contextChannel) || contextChannel < 1
+        contextChannel = 1;
+    end
     fittingMethod = '3D Gaussian';
     has3D = true;
 
-    if isfield(handles, 'channelTable') && isgraphics(handles.channelTable) && ...
-            ~isempty(handles.channelTable.Data)
-        row = max(1, min(size(handles.channelTable.Data, 1), handles.selectedChannelRow));
-        contextChannel = parseChannelFromRowValue(handles.channelTable.Data{row, 2});
+    if nargin >= 2 && ~isempty(contextChannel) && isfinite(contextChannel) && contextChannel >= 1
+        contextChannel = round(contextChannel);
+    elseif isfield(handles, 'selectedChannelRow') && isfinite(handles.selectedChannelRow)
+        contextChannel = max(1, round(handles.selectedChannelRow));
     end
 
-    if isfield(handles, 'loadedParams') && isstruct(handles.loadedParams) && ~isempty(fieldnames(handles.loadedParams))
-        [fm, h3d] = inferChannelTrainingContext(handles.loadedParams, contextChannel);
+    if isfield(handles, 'channelTable') && isgraphics(handles.channelTable) && ~isempty(handles.channelTable.Data)
+        contextChannel = max(1, min(size(handles.channelTable.Data, 1), contextChannel));
+    end
+
+    paramsForContext = struct();
+    if nargin >= 3 && isstruct(paramsOverride) && ~isempty(fieldnames(paramsOverride))
+        paramsForContext = paramsOverride;
+    elseif isfield(handles, 'loadedParams') && isstruct(handles.loadedParams) && ~isempty(fieldnames(handles.loadedParams))
+        paramsForContext = handles.loadedParams;
+    end
+
+    if ~isempty(fieldnames(paramsForContext))
+        [fm, h3d] = inferChannelTrainingContext(paramsForContext, contextChannel);
         if ~isempty(fm)
             fittingMethod = char(string(fm));
         end
@@ -1212,79 +1892,141 @@ function [contextChannel, fittingMethod, has3D] = getTrainingFeatureSelectionCon
     end
 end
 
-function [isValid, errMsg] = validateTrainingFeatureSelection(handles, channels)
-    isValid = true;
+function [handles, params, effectiveChannelIdx, paramPathUsed, errMsg] = resolveContextParamsForChannel(fig, channelIdx)
+    handles = guidata(fig);
+    params = struct();
+    effectiveChannelIdx = 1;
+    paramPathUsed = '';
     errMsg = '';
 
-    if ~isfield(handles, 'loadedParams') || ~isstruct(handles.loadedParams) || isempty(fieldnames(handles.loadedParams))
-        isValid = false;
-        errMsg = 'Feature validation requires a loaded parameter file.';
+    if nargin < 2 || ~isfinite(channelIdx) || channelIdx < 1
+        channelIdx = 1;
+    end
+    channelIdx = round(channelIdx);
+
+    tableData = {};
+    if isfield(handles, 'channelTable') && isgraphics(handles.channelTable)
+        tableData = handles.channelTable.Data;
+    end
+
+    rowIdx = [];
+    if ~isempty(tableData)
+        for r = 1:size(tableData, 1)
+            try
+                if parseChannelFromRowValue(tableData{r, 2}) == channelIdx
+                    rowIdx = r;
+                    break;
+                end
+            catch
+                % Ignore malformed row labels and continue.
+            end
+        end
+        if isempty(rowIdx) && channelIdx <= size(tableData, 1)
+            rowIdx = channelIdx;
+        end
+    end
+
+    templateParamPath = '';
+    if isfield(handles, 'paramPathEdit') && isgraphics(handles.paramPathEdit)
+        templateParamPath = strtrim(char(string(handles.paramPathEdit.Value)));
+    end
+    paramPathUsed = resolveChannelParameterPathFromRow(tableData, rowIdx, templateParamPath);
+
+    if isempty(paramPathUsed)
+        if isfield(handles, 'loadedParams') && isstruct(handles.loadedParams) && ...
+                ~isempty(fieldnames(handles.loadedParams))
+            params = handles.loadedParams;
+            effectiveChannelIdx = resolveEffectiveParamChannelIndex(params, channelIdx);
+            paramPathUsed = '(loaded template parameter struct)';
+            return;
+        end
+        errMsg = sprintf('Channel %d has no parameter file configured.', channelIdx);
         return;
     end
 
-    channels = unique(round(channels(:)'));
-    problems = {};
+    [params, effectiveChannelIdx, loadErr] = resolveTrainingParams(paramPathUsed, channelIdx);
+    if ~isempty(loadErr)
+        errMsg = loadErr;
+    end
+end
 
-    for i = 1:numel(channels)
-        ch = channels(i);
-        chanCfg = getChannelFeatureConfig(handles, ch);
-        selectedFeatures = chanCfg.selectedFeatures;
-        customExpressions = chanCfg.customExpressions;
-        if isempty(selectedFeatures) && isempty(customExpressions)
-            continue;
-        end
+function paramPath = resolveChannelParameterPathFromRow(tableData, rowIdx, templateParamPath)
+    paramPath = '';
+    if nargin < 3 || ~(ischar(templateParamPath) || isstring(templateParamPath))
+        templateParamPath = '';
+    end
+    templateParamPath = strtrim(char(string(templateParamPath)));
 
-        [fittingMethod, has3D] = inferChannelTrainingContext(handles.loadedParams, ch);
-        if isempty(fittingMethod)
-            fittingMethod = '3D Gaussian';
-        end
-        if isempty(has3D)
-            has3D = true;
-        end
-
-        [~, featureInfo] = snap_helpers.classification.getAvailableFeatures(char(fittingMethod), logical(has3D), false);
-        available = fieldnames(featureInfo);
-
-        missingBase = setdiff(selectedFeatures, available);
-        if ~isempty(missingBase)
-            problems{end+1} = sprintf('Channel %d missing base feature(s): %s', ... %#ok<AGROW>
-                ch, strjoin(missingBase, ', '));
-            continue;
-        end
-
-        if isempty(customExpressions)
-            continue;
-        end
-
-        dummyData = buildDummyFeatureStructForValidation(available);
-        for e = 1:numel(customExpressions)
-            exprName = char(string(customExpressions(e).name));
-            exprText = char(string(customExpressions(e).expression));
-            warnState = warning('query', 'all');
-            warning('off', 'all');
-            warnCleanup = onCleanup(@() warning(warnState));
-            result = snap_helpers.classification.evaluateExpression(exprText, dummyData, available);
-            clear warnCleanup;
-            if isempty(result) || all(~isfinite(result))
-                problems{end+1} = sprintf('Channel %d custom expression "%s" is incompatible with available features.', ... %#ok<AGROW>
-                    ch, exprName);
-            end
+    if nargin >= 1 && ~isempty(tableData) && ~isempty(rowIdx) && ...
+            isfinite(rowIdx) && rowIdx >= 1 && rowIdx <= size(tableData, 1)
+        rowIdx = round(rowIdx);
+        if size(tableData, 2) >= 8
+            paramPath = strtrim(char(string(tableData{rowIdx, 5})));
         end
     end
 
-    if ~isempty(problems)
-        isValid = false;
-        errMsg = strjoin(problems, newline);
+    if isempty(paramPath)
+        paramPath = templateParamPath;
+    end
+end
+
+function [params, effectiveChannelIdx, errMsg] = resolveTrainingParams(paramPath, requestedChannelIdx)
+    params = struct();
+    effectiveChannelIdx = 1;
+    errMsg = '';
+
+    paramPath = strtrim(char(string(paramPath)));
+    if isempty(paramPath)
+        errMsg = 'Parameter file path is empty.';
+        return;
+    end
+    if exist(paramPath, 'file') ~= 2
+        errMsg = sprintf('Parameter file not found: %s', paramPath);
+        return;
+    end
+
+    [params, ~, loadErr] = loadTrainingParameters(paramPath);
+    if ~isempty(loadErr)
+        errMsg = loadErr;
+        return;
+    end
+    effectiveChannelIdx = resolveEffectiveParamChannelIndex(params, requestedChannelIdx);
+end
+
+function idx = resolveEffectiveParamChannelIndex(params, requestedChannelIdx)
+    idx = max(1, round(normalizeScalarNumeric(requestedChannelIdx, 1)));
+    if nargin < 1 || ~isstruct(params) || isempty(fieldnames(params))
+        return;
+    end
+
+    nChannels = 1;
+    try
+        caps = snap_helpers.classification.resolveChannelCapabilities(params, 'IncludeFeatureInfo', false);
+        if ~isempty(caps)
+            nChannels = numel(caps);
+        else
+            nChannels = inferNumChannelsFromParameters(params, 1);
+        end
+    catch
+        nChannels = inferNumChannelsFromParameters(params, 1);
+    end
+
+    if idx > max(1, nChannels)
+        idx = 1;
     end
 end
 
 function [cfgOut, report] = sanitizeChannelFeatureConfig(cfgIn, params, channelIdx)
     cfgOut = normalizeChannelFeatureConfig(cfgIn);
+    originalSelected = cfgOut.selectedFeatures;
     report = struct( ...
         'droppedBase', {{}}, ...
         'droppedCustom', {{}}, ...
+        'autoGuarded', {{}}, ...
         'fittingMethod', '3D Gaussian', ...
-        'has3D', true);
+        'has3D', true, ...
+        'warnings', {{}}, ...
+        'errors', {{}});
 
     if nargin < 2 || ~isstruct(params) || isempty(fieldnames(params))
         return;
@@ -1293,105 +2035,75 @@ function [cfgOut, report] = sanitizeChannelFeatureConfig(cfgIn, params, channelI
         channelIdx = 1;
     end
 
-    [fittingMethod, has3D] = inferChannelTrainingContext(params, channelIdx);
-    if isempty(fittingMethod)
-        fittingMethod = '3D Gaussian';
-    end
-    if isempty(has3D)
-        has3D = true;
-    end
-    report.fittingMethod = char(string(fittingMethod));
-    report.has3D = logical(has3D);
+    effectiveChannelIdx = resolveEffectiveParamChannelIndex(params, channelIdx);
 
-    [~, featureInfo] = snap_helpers.classification.getAvailableFeatures( ...
-        report.fittingMethod, report.has3D, false);
-    available = fieldnames(featureInfo);
-
-    if ~isempty(cfgOut.selectedFeatures)
-        selected = cfgOut.selectedFeatures(:)';
-        keepMask = ismember(selected, available);
-        report.droppedBase = selected(~keepMask);
-        cfgOut.selectedFeatures = selected(keepMask);
-    end
-
-    if ~isempty(cfgOut.customExpressions)
-        [cfgOut.customExpressions, report.droppedCustom] = ...
-            filterCompatibleCustomExpressions(cfgOut.customExpressions, available);
-    end
-end
-
-function [customOut, droppedNames] = filterCompatibleCustomExpressions(customIn, availableFeatures)
-    customOut = normalizeCustomExpressionList(customIn);
-    droppedNames = {};
-
-    if isempty(customOut)
+    try
+        caps = snap_helpers.classification.resolveChannelCapabilities(params, ...
+            'Channels', effectiveChannelIdx, ...
+            'IncludeFeatureInfo', false);
+    catch ME
+        report.errors{end+1} = sprintf('Capability resolution failed: %s', ME.message); %#ok<AGROW>
         return;
     end
-
-    dummyData = buildDummyFeatureStructForValidation(availableFeatures);
-    keepMask = false(1, numel(customOut));
-    warnState = warning('query', 'all');
-    warning('off', 'all');
-    warnCleanup = onCleanup(@() warning(warnState));
-    for e = 1:numel(customOut)
-        exprName = char(string(customOut(e).name));
-        exprText = char(string(customOut(e).expression));
-        try
-            result = snap_helpers.classification.evaluateExpression(exprText, dummyData, availableFeatures);
-            keepMask(e) = ~isempty(result) && any(isfinite(result));
-        catch
-            keepMask(e) = false;
-        end
-        if ~keepMask(e)
-            droppedNames{end+1} = exprName; %#ok<AGROW>
-        end
+    if isempty(caps)
+        report.errors{end+1} = 'Capability resolution returned no channel context.'; %#ok<AGROW>
+        return;
     end
-    clear warnCleanup;
+    cap = caps(1);
+    report.fittingMethod = cap.fittingMethod;
+    report.has3D = logical(cap.has3D);
 
-    customOut = customOut(keepMask);
-end
+    customIn = normalizeCustomExpressionList(cfgOut.customExpressions);
+    inputPack = struct( ...
+        'specVersion', '2.0.0', ...
+        'packId', sprintf('snap_train_sanitize_ch%d', channelIdx), ...
+        'strictModeDefault', false, ...
+        'channelPacks', struct( ...
+            'channelIdx', channelIdx, ...
+            'selectedFeatures', {cfgOut.selectedFeatures}, ...
+            'customExpressions', customIn, ...
+            'requiredFeatures', {{}}, ...
+            'requiredCapabilities', struct( ...
+                'fittingMethod', cap.fittingMethod, ...
+                'has3D', logical(cap.has3D), ...
+                'hasPhysicalSpacing', false)));
 
-function data = buildDummyFeatureStructForValidation(featureNames)
-    n = 4;
-    data = repmat(struct(), n, 1);
-    for i = 1:n
-        for f = 1:numel(featureNames)
-            data(i).(featureNames{f}) = 1 + 0.1 * i;
-        end
+    [sanitizedPack, validationReport] = ...
+        snap_helpers.classification.validateExpressionPackAgainstCapabilities( ...
+            inputPack, cap, 'Mode', 'permissive', 'AutoGuardUnsafeExpressions', true);
+
+    if ~isempty(validationReport.channelReports)
+        chReport = validationReport.channelReports(1);
+        report.warnings = chReport.warnings;
+        report.errors = chReport.errors;
+        report.autoGuarded = chReport.autoGuarded;
     end
+
+    if ~isempty(sanitizedPack.channelPacks)
+        clean = sanitizedPack.channelPacks(1);
+        cfgOut.selectedFeatures = clean.selectedFeatures;
+        cfgOut.customExpressions = normalizeCustomExpressionList(clean.customExpressions);
+    end
+
+    report.droppedBase = setdiff(originalSelected, cfgOut.selectedFeatures, 'stable');
+
+    inNames = {};
+    if isstruct(customIn) && ~isempty(customIn)
+        inNames = arrayfun(@(s) char(string(s.name)), customIn, 'UniformOutput', false);
+    end
+    outNames = {};
+    if isstruct(cfgOut.customExpressions) && ~isempty(cfgOut.customExpressions)
+        outNames = arrayfun(@(s) char(string(s.name)), cfgOut.customExpressions, 'UniformOutput', false);
+    end
+    report.droppedCustom = setdiff(inNames, outNames, 'stable');
 end
 
 function onTrainSelectedChannels(fig)
     handles = guidata(fig);
+    handles = syncTabsToState(handles);
+    guidata(fig, handles);
 
-    paramPath = strtrim(handles.paramPathEdit.Value);
-    outDir = strtrim(handles.outDirEdit.Value);
-    useOptimization = handles.optimizeCheck.Value;
-    includeSweepReport = useOptimization && logical(handles.sweepReportCheck.Value);
-
-    if isempty(paramPath) || exist(paramPath, 'file') ~= 2
-        uialert(fig, 'Select a valid SNAP parameter file before training.', 'Missing Parameter File');
-        return;
-    end
-    if isempty(outDir)
-        uialert(fig, 'Select an output directory.', 'Missing Output Directory');
-        return;
-    end
-    if exist(outDir, 'dir') ~= 7
-        mkdir(outDir);
-    end
-
-    if isempty(handles.loadedParams) || ~isstruct(handles.loadedParams) || isempty(fieldnames(handles.loadedParams))
-        [params, numChannels, errMsg] = loadTrainingParameters(paramPath);
-        if ~isempty(errMsg)
-            uialert(fig, errMsg, 'Parameter File Error');
-            return;
-        end
-        handles.loadedParams = params;
-        guidata(fig, handles);
-        updateChannelTableFromDetectedChannels(fig, numChannels, false);
-        handles = guidata(fig);
-    end
+    templateParamPath = strtrim(char(string(handles.paramPathEdit.Value)));
 
     tableData = handles.channelTable.Data;
     if isempty(tableData)
@@ -1405,11 +2117,22 @@ function onTrainSelectedChannels(fig)
         return;
     end
 
+    defaultOutputDir = fileparts(templateParamPath);
+    if isempty(defaultOutputDir) || ~isfolder(defaultOutputDir)
+        defaultOutputDir = pwd;
+    end
+
     channelConfigs = struct('channel', {}, 'matchDistance', {}, 'convertFijiCoords', {}, ...
-        'trainDirectory', {}, 'validationDirectory', {}, 'outputPath', {});
+        'parameterFile', {}, 'parameterStruct', {}, 'parameterChannelIndex', {}, ...
+        'trainDirectory', {}, 'validationDirectory', {}, 'outputDirectory', {}, ...
+        'outputPath', {}, 'useOptimization', {}, 'includeSweepReport', {}, ...
+        'trainOptions', {}, 'sweepConfig', {});
+    missingParameterChannels = [];
+    invalidParameterMessages = {};
     missingTrainChannels = [];
     missingValidationChannels = [];
     invalidMatchDistanceChannels = [];
+    invalidOptionMessages = {};
 
     for idx = 1:numel(selectedRows)
         row = selectedRows(idx);
@@ -1417,7 +2140,13 @@ function onTrainSelectedChannels(fig)
         matchDistance = 2;
         convertFiji = false;
 
-        if size(tableData, 2) >= 7
+        if size(tableData, 2) >= 8
+            matchDistance = normalizeScalarNumeric(tableData{row, 3}, nan);
+            if ~isfinite(matchDistance) || matchDistance < 0
+                invalidMatchDistanceChannels(end+1) = ch; %#ok<AGROW>
+            end
+            convertFiji = isSelectedChannelFlag(tableData{row, 4});
+        elseif size(tableData, 2) >= 7
             matchDistance = normalizeScalarNumeric(tableData{row, 3}, nan);
             if ~isfinite(matchDistance) || matchDistance < 0
                 invalidMatchDistanceChannels(end+1) = ch; %#ok<AGROW>
@@ -1428,22 +2157,39 @@ function onTrainSelectedChannels(fig)
             convertFiji = isSelectedChannelFlag(tableData{row, 3});
         end
 
+        paramPath = resolveChannelParameterPathFromRow(tableData, row, templateParamPath);
+        if isempty(paramPath) || exist(paramPath, 'file') ~= 2
+            missingParameterChannels(end+1) = ch; %#ok<AGROW>
+            continue;
+        end
+        [channelParams, parameterChannelIndex, paramErr] = resolveTrainingParams(paramPath, ch);
+        if ~isempty(paramErr)
+            invalidParameterMessages{end+1} = sprintf('Channel %d (%s): %s', ch, paramPath, paramErr); %#ok<AGROW>
+            continue;
+        end
+
         trainDir = '';
-        if size(tableData, 2) >= 7
+        if size(tableData, 2) >= 8
+            trainDir = strtrim(char(string(tableData{row, 6})));
+        elseif size(tableData, 2) >= 7
             trainDir = strtrim(char(string(tableData{row, 5})));
         elseif size(tableData, 2) >= 4
             trainDir = strtrim(char(string(tableData{row, 4})));
         end
 
         valDir = '';
-        if size(tableData, 2) >= 7
+        if size(tableData, 2) >= 8
+            valDir = strtrim(char(string(tableData{row, 7})));
+        elseif size(tableData, 2) >= 7
             valDir = strtrim(char(string(tableData{row, 6})));
         elseif size(tableData, 2) >= 5
             valDir = strtrim(char(string(tableData{row, 5})));
         end
 
         outName = '';
-        if size(tableData, 2) >= 7
+        if size(tableData, 2) >= 8
+            outName = strtrim(char(string(tableData{row, 8})));
+        elseif size(tableData, 2) >= 7
             outName = strtrim(char(string(tableData{row, 7})));
         elseif size(tableData, 2) >= 6
             outName = strtrim(char(string(tableData{row, 6})));
@@ -1453,6 +2199,26 @@ function onTrainSelectedChannels(fig)
         end
         if ~endsWith(lower(outName), '.mat')
             outName = [outName '.mat'];
+        end
+
+        advCfg = getChannelAdvancedConfig(handles, ch);
+        outDir = strtrim(char(string(advCfg.outputDirectory)));
+        if isempty(outDir)
+            outDir = defaultOutputDir;
+        end
+        useOptimization = logical(advCfg.optimizeWithSweep);
+        includeSweepReport = useOptimization && logical(advCfg.includeSweepReport);
+
+        try
+            trainOptions = buildManualTrainingOptions(handles, ch);
+            if useOptimization
+                sweepConfig = buildSweepConfig(handles, ch);
+            else
+                sweepConfig = struct();
+            end
+        catch ME
+            invalidOptionMessages{end+1} = sprintf('Channel %d: %s', ch, ME.message); %#ok<AGROW>
+            continue;
         end
 
         if isempty(trainDir) || ~isfolder(trainDir)
@@ -1466,9 +2232,36 @@ function onTrainSelectedChannels(fig)
             'channel', ch, ...
             'matchDistance', matchDistance, ...
             'convertFijiCoords', convertFiji, ...
+            'parameterFile', paramPath, ...
+            'parameterStruct', channelParams, ...
+            'parameterChannelIndex', parameterChannelIndex, ...
             'trainDirectory', trainDir, ...
             'validationDirectory', valDir, ...
-            'outputPath', fullfile(outDir, outName));
+            'outputDirectory', outDir, ...
+            'outputPath', fullfile(outDir, outName), ...
+            'useOptimization', useOptimization, ...
+            'includeSweepReport', includeSweepReport, ...
+            'trainOptions', trainOptions, ...
+            'sweepConfig', sweepConfig);
+    end
+
+    if ~isempty(missingParameterChannels)
+        msg = sprintf('Set valid per-channel parameter files for: %s', ...
+            formatChannelList(missingParameterChannels));
+        uialert(fig, msg, 'Missing Parameter Files');
+        return;
+    end
+
+    if ~isempty(invalidParameterMessages)
+        uialert(fig, sprintf('Per-channel parameter file errors:\n%s', ...
+            strjoin(invalidParameterMessages, newline)), 'Parameter File Error');
+        return;
+    end
+
+    if ~isempty(invalidOptionMessages)
+        uialert(fig, sprintf('Invalid per-channel training options:\n%s', ...
+            strjoin(invalidOptionMessages, newline)), 'Invalid Training Options');
+        return;
     end
 
     if ~isempty(invalidMatchDistanceChannels)
@@ -1491,26 +2284,24 @@ function onTrainSelectedChannels(fig)
         return;
     end
 
-    [featureSelectionOk, featureSelectionErr] = validateTrainingFeatureSelection(handles, [channelConfigs.channel]);
-    if ~featureSelectionOk
-        appendTrainLog(fig, sprintf(['Feature compatibility warning before training: %s ' ...
-            '(incompatible selections will be pruned automatically).'], featureSelectionErr));
+    if isempty(channelConfigs)
+        uialert(fig, 'No valid channel configurations remain after validation checks.', 'No Valid Channels');
+        return;
     end
 
-    try
-        trainOptions = buildManualTrainingOptions(handles);
-        if useOptimization
-            sweepConfig = buildSweepConfig(handles);
-        else
-            sweepConfig = struct();
-        end
-    catch ME
-        uialert(fig, ME.message, 'Invalid Training Options');
+    duplicateOutputChannels = localFindDuplicateOutputChannels(channelConfigs);
+    if ~isempty(duplicateOutputChannels)
+        msg = sprintf(['Each selected channel must write to a unique classifier file. ', ...
+            'Duplicate output targets detected for: %s'], ...
+            formatChannelList(duplicateOutputChannels));
+        uialert(fig, msg, 'Duplicate Output Classifier');
         return;
     end
 
     appendTrainLog(fig, '------------------------------------------------------------');
-    appendTrainLog(fig, sprintf('Starting training (%d selected channels)...', numel(selectedRows)));
+    appendTrainLog(fig, sprintf('Starting training (%d selected channels)...', numel(channelConfigs)));
+    appendTrainLog(fig, 'Channel numbers are slot labels only; training stays channel-local (no cross-channel pooling).');
+    appendTrainLog(fig, 'Parameter mode: PER-CHANNEL (each channel tab can use its own parameter file).');
     appendTrainLog(fig, 'Feature mode: PER-CHANNEL (base features + custom expressions can differ by channel).');
     setTrainProgressVisual(fig, 0, sprintf('Starting training for %d channel(s)...', numel(channelConfigs)), [0 0 0.8]);
 
@@ -1525,13 +2316,33 @@ function onTrainSelectedChannels(fig)
         outPath = cfg.outputPath;
         [~, outName, outExt] = fileparts(outPath);
         outName = [outName outExt];
-        stageCount = 3 + double(useOptimization);
+        stageCount = 3 + double(cfg.useOptimization);
         stage = 0;
+
+        if exist(cfg.outputDirectory, 'dir') ~= 7
+            try
+                mkdir(cfg.outputDirectory);
+            catch ME
+                nFailed = nFailed + 1;
+                results(end+1) = struct('channel', ch, ... %#ok<AGROW>
+                    'trainDirectory', cfg.trainDirectory, ...
+                    'validationDirectory', cfg.validationDirectory, ...
+                    'outputPath', outPath, 'success', false, ...
+                    'result', struct(), 'error', sprintf('Failed creating output directory: %s', ME.message));
+                appendTrainLog(fig, sprintf('[Channel %d] FAILED: Unable to create output directory "%s" (%s)', ...
+                    ch, cfg.outputDirectory, ME.message));
+                updateTrainProgressStage(fig, idx, numel(channelConfigs), stageCount, stageCount, ...
+                    sprintf('Channel %d failed: output directory error.', ch));
+                continue;
+            end
+        end
 
         stage = stage + 1;
         updateTrainProgressStage(fig, idx, numel(channelConfigs), stage, stageCount, ...
             sprintf('Channel %d: Discovering training pairs (%s)...', ch, outName));
         appendTrainLog(fig, sprintf('[Channel %d] Match distance: %.4g voxels', ch, cfg.matchDistance));
+        appendTrainLog(fig, sprintf('[Channel %d] Parameter file: %s (effective parameter-channel index=%d)', ...
+            ch, cfg.parameterFile, cfg.parameterChannelIndex));
         appendTrainLog(fig, sprintf('[Channel %d] Training directory: %s', ch, cfg.trainDirectory));
         appendTrainLog(fig, sprintf('[Channel %d] Discovering training pairs for classifier %s...', ch, outName));
         trainDiscoveryCb = @(msg) appendTrainLog(fig, sprintf('[Channel %d] %s', ch, msg));
@@ -1565,7 +2376,7 @@ function onTrainSelectedChannels(fig)
         logDiscoveredPairs(fig, ch, 'train', trainExports, trainLabels, 4);
 
         chFeatureCfg = getChannelFeatureConfig(handles, ch);
-        [chFeatureCfg, compatReport] = sanitizeChannelFeatureConfig(chFeatureCfg, handles.loadedParams, ch);
+        [chFeatureCfg, compatReport] = sanitizeChannelFeatureConfig(chFeatureCfg, cfg.parameterStruct, cfg.parameterChannelIndex);
         if ~isempty(compatReport.droppedBase)
             appendTrainLog(fig, sprintf('[Channel %d] Auto-dropped incompatible base feature(s): %s', ...
                 ch, strjoin(compatReport.droppedBase, ', ')));
@@ -1587,17 +2398,17 @@ function onTrainSelectedChannels(fig)
         args = { ...
             'MatchDistance', cfg.matchDistance, ...
             'ConvertFijiCoords', logical(cfg.convertFijiCoords), ...
-            'ParameterStruct', handles.loadedParams, ...
-            'ChannelIndex', ch, ...
+            'ParameterStruct', cfg.parameterStruct, ...
+            'ChannelIndex', cfg.parameterChannelIndex, ...
             'SelectedFeatures', chFeatureCfg.selectedFeatures, ...
             'CustomExpressions', chFeatureCfg.customExpressions, ...
-            'TrainingOptions', trainOptions, ...
+            'TrainingOptions', cfg.trainOptions, ...
             'HyperparameterSweep', false, ...
             'Verbose', true, ...
             'ProgressCallback', trainingProgressCb ...
         };
 
-        [fittingMethod, has3D] = inferChannelTrainingContext(handles.loadedParams, ch);
+        [fittingMethod, has3D] = inferChannelTrainingContext(cfg.parameterStruct, cfg.parameterChannelIndex);
         if ~isempty(fittingMethod)
             args = [args, {'FittingMethod', fittingMethod}]; %#ok<AGROW>
         end
@@ -1605,7 +2416,7 @@ function onTrainSelectedChannels(fig)
             args = [args, {'Has3D', has3D}]; %#ok<AGROW>
         end
 
-        if useOptimization
+        if cfg.useOptimization
             stage = stage + 1;
             updateTrainProgressStage(fig, idx, numel(channelConfigs), stage, stageCount, ...
                 sprintf('Channel %d: Discovering validation pairs (%s)...', ch, outName));
@@ -1641,15 +2452,24 @@ function onTrainSelectedChannels(fig)
             appendTrainLog(fig, sprintf('[Channel %d] Found %d validation pair(s).', ch, numel(valExports)));
             logDiscoveredPairs(fig, ch, 'validation', valExports, valLabels, 4);
 
+            appendTrainLog(fig, sprintf('[Channel %d] Validation tie handling: %s.', ...
+                ch, describeSweepTieHandlingPolicy(cfg.sweepConfig.tieHandling)));
             args = [args, { ...
                 'ValidationExportFiles', valExports, ...
                 'ValidationLabelFiles', valLabels, ...
                 'HyperparameterSweep', true, ...
-                'SweepKernels', sweepConfig.kernels, ...
-                'SweepBoxConstraints', sweepConfig.boxConstraints, ...
-                'SweepKernelScales', sweepConfig.kernelScales, ...
-                'SweepPolynomialOrders', sweepConfig.polynomialOrders ...
+                'SweepKernels', cfg.sweepConfig.kernels, ...
+                'SweepBoxConstraints', cfg.sweepConfig.boxConstraints, ...
+                'SweepKernelScales', cfg.sweepConfig.kernelScales, ...
+                'SweepPolynomialOrders', cfg.sweepConfig.polynomialOrders, ...
+                'SweepTieHandling', cfg.sweepConfig.tieHandling ...
             }]; %#ok<AGROW>
+            if isfield(cfg.sweepConfig, 'tiePromptCallback') && isa(cfg.sweepConfig.tiePromptCallback, 'function_handle')
+                args = [args, {'SweepTiePromptCallback', cfg.sweepConfig.tiePromptCallback}]; %#ok<AGROW>
+            elseif strcmpi(char(string(cfg.sweepConfig.tieHandling)), 'prompt')
+                args = [args, {'SweepTiePromptCallback', ...
+                    @(tieIdx, sweepResults) promptSweepTieSelection(fig, ch, tieIdx, sweepResults)}]; %#ok<AGROW>
+            end
         end
 
         try
@@ -1666,7 +2486,7 @@ function onTrainSelectedChannels(fig)
                 'outputPath', outPath, 'success', true, ...
                 'result', res, 'error', '');
             appendTrainLog(fig, sprintf('[Channel %d] SUCCESS', ch));
-            if includeSweepReport
+            if cfg.includeSweepReport
                 emitSweepPerformanceReport(fig, ch, res, outPath);
             end
             updateTrainProgressStage(fig, idx, numel(channelConfigs), stageCount, stageCount, sprintf('Channel %d complete.', ch));
@@ -1685,18 +2505,34 @@ function onTrainSelectedChannels(fig)
 
     summary = struct();
     summary.timestamp = datetime('now');
-    summary.parameterFile = paramPath;
-    summary.outputDirectory = outDir;
+    summary.templateParameterFile = templateParamPath;
+    summary.parameterFilesByChannel = arrayfun(@(c) c.parameterFile, channelConfigs, 'UniformOutput', false);
+    summary.parameterChannelIndexByChannel = arrayfun(@(c) c.parameterChannelIndex, channelConfigs);
+    summary.outputDirectoriesByChannel = arrayfun(@(c) c.outputDirectory, channelConfigs, 'UniformOutput', false);
     summary.matchDistanceByChannel = arrayfun(@(c) c.matchDistance, channelConfigs);
-    summary.optimized = useOptimization;
-    summary.sweepReportIncluded = includeSweepReport;
+    summary.optimizedByChannel = arrayfun(@(c) logical(c.useOptimization), channelConfigs);
+    summary.sweepReportIncludedByChannel = arrayfun(@(c) logical(c.includeSweepReport), channelConfigs);
+    summary.sweepTieHandlingByChannel = arrayfun(@(c) localGetSweepTieHandlingSafe(c), channelConfigs, 'UniformOutput', false);
+    summary.optimized = any(summary.optimizedByChannel);
+    summary.sweepReportIncluded = any(summary.sweepReportIncludedByChannel);
     summary.channelFeatureConfigs = handles.channelFeatureConfigs;
-    summary.channelConfigs = channelConfigs;
+    summaryChannelConfigs = channelConfigs;
+    for iCfg = 1:numel(summaryChannelConfigs)
+        summaryChannelConfigs(iCfg).parameterStruct = struct();
+    end
+    summary.channelConfigs = summaryChannelConfigs;
     summary.results = results;
     summary.successCount = nSuccess;
     summary.failCount = nFailed;
 
-    summaryPath = fullfile(outDir, ['SNAP_train_summary_' datestr(now, 'yyyymmdd_HHMMSS') '.mat']);
+    summaryBaseDir = defaultOutputDir;
+    if ~isempty(channelConfigs)
+        firstOutDir = strtrim(char(string(channelConfigs(1).outputDirectory)));
+        if ~isempty(firstOutDir)
+            summaryBaseDir = firstOutDir;
+        end
+    end
+    summaryPath = fullfile(summaryBaseDir, ['SNAP_train_summary_' datestr(now, 'yyyymmdd_HHMMSS') '.mat']);
     save(summaryPath, '-struct', 'summary');
     appendTrainLog(fig, sprintf('Saved training summary: %s', summaryPath));
     appendTrainLog(fig, sprintf('Training complete: %d success, %d failed.', nSuccess, nFailed));
@@ -1798,6 +2634,50 @@ function txt = formatChannelList(channels)
     channels = unique(channels(:)');
     labels = arrayfun(@(c) sprintf('Channel %d', c), channels, 'UniformOutput', false);
     txt = strjoin(labels, ', ');
+end
+
+function tieHandling = localGetSweepTieHandlingSafe(cfg)
+    tieHandling = '';
+    if ~isstruct(cfg) || ~isfield(cfg, 'useOptimization') || ~logical(cfg.useOptimization)
+        return;
+    end
+    if isfield(cfg, 'sweepConfig') && isstruct(cfg.sweepConfig) && isfield(cfg.sweepConfig, 'tieHandling')
+        tieHandling = char(string(cfg.sweepConfig.tieHandling));
+    end
+end
+
+function channels = localFindDuplicateOutputChannels(channelConfigs)
+    channels = [];
+    if isempty(channelConfigs)
+        return;
+    end
+
+    pathKeys = cell(1, numel(channelConfigs));
+    for i = 1:numel(channelConfigs)
+        pathKeys{i} = localNormalizePathKey(channelConfigs(i).outputPath);
+    end
+
+    duplicateChannels = [];
+    uniqueKeys = unique(pathKeys, 'stable');
+    for i = 1:numel(uniqueKeys)
+        memberIdx = find(strcmp(pathKeys, uniqueKeys{i}));
+        if numel(memberIdx) > 1
+            duplicateChannels = [duplicateChannels, [channelConfigs(memberIdx).channel]]; %#ok<AGROW>
+        end
+    end
+
+    if isempty(duplicateChannels)
+        return;
+    end
+
+    channels = unique(duplicateChannels, 'stable');
+end
+
+function key = localNormalizePathKey(pathIn)
+    key = char(string(pathIn));
+    key = strtrim(key);
+    key = strrep(key, '/', '\');
+    key = lower(key);
 end
 
 function logDiscoveredPairs(fig, channelIdx, pairType, exportFiles, labelFiles, maxLines)
@@ -1947,38 +2827,19 @@ function [params, numChannels, errMsg] = loadTrainingParameters(paramPath)
     end
 
     try
-        raw = load(paramPath);
-        if isfield(raw, 'batchConfig') && isfield(raw.batchConfig, 'parameters')
-            params = raw.batchConfig.parameters;
-            if isfield(raw.batchConfig, 'workflowConfig') && isstruct(raw.batchConfig.workflowConfig)
-                if ~isfield(params, 'numChannels') && isfield(raw.batchConfig.workflowConfig, 'numChannels')
-                    params.numChannels = raw.batchConfig.workflowConfig.numChannels;
-                end
-            end
-        elseif isfield(raw, 'paramData') && isfield(raw.paramData, 'parameters')
-            params = raw.paramData.parameters;
-            if isfield(raw.paramData, 'workflowConfig') && isstruct(raw.paramData.workflowConfig)
-                if ~isfield(params, 'numChannels') && isfield(raw.paramData.workflowConfig, 'numChannels')
-                    params.numChannels = raw.paramData.workflowConfig.numChannels;
-                end
-            end
-        elseif isfield(raw, 'paramData') && isfield(raw.paramData, 'workflowConfig')
-            params = raw.paramData.workflowConfig;
-        elseif isfield(raw, 'workflowConfig')
-            params = raw.workflowConfig;
-        elseif isfield(raw, 'parameters')
-            params = raw.parameters;
-        elseif isfield(raw, 'lastUsed')
-            params = raw.lastUsed;
+        [params, ~] = snap_helpers.classification.loadParameterStruct(paramPath);
+        caps = snap_helpers.classification.resolveChannelCapabilities(params, 'IncludeFeatureInfo', false);
+        if isempty(caps)
+            numChannels = inferNumChannelsFromParameters(params, 1);
         else
-            errMsg = ['Could not find parameter struct (expected one of: ', ...
-                'batchConfig.parameters, paramData.parameters, paramData.workflowConfig, workflowConfig, parameters, or lastUsed).'];
-            return;
+            numChannels = numel(caps);
         end
-
-        numChannels = inferNumChannelsFromParameters(params, 1);
     catch ME
-        errMsg = sprintf('Failed to load parameter file: %s', ME.message);
+        loc = '';
+        if ~isempty(ME.stack)
+            loc = sprintf(' [%s:%d]', ME.stack(1).name, ME.stack(1).line);
+        end
+        errMsg = sprintf('Failed to load parameter file: %s%s', ME.message, loc);
     end
 end
 
@@ -2036,16 +2897,46 @@ function n = inferChannelCountFromValue(v)
     end
 end
 
-function options = buildManualTrainingOptions(handles)
+function options = buildManualTrainingOptions(handles, channelIdx)
     options = struct();
-    options.kernelFunction = char(string(handles.kernelDrop.Value));
-    options.boxConstraint = handles.boxConstraintInput.Value;
-    options.kernelScale = parseKernelScale(handles.kernelScaleInput.Value);
-    options.polynomialOrder = round(handles.polyOrderInput.Value);
-    options.standardize = logical(handles.standardizeCheck.Value);
-    options.crossValidate = logical(handles.crossValidateCheck.Value);
-    options.kFold = max(2, round(handles.kFoldInput.Value));
-    if logical(handles.balanceClassCheck.Value)
+    if nargin < 2 || isempty(channelIdx) || ~isfinite(channelIdx)
+        channelIdx = max(1, getfieldwithdefault(handles, 'selectedChannelRow', 1));
+    end
+    channelIdx = max(1, round(channelIdx));
+
+    useTabControls = isfield(handles, 'channelTabs') && channelIdx <= numel(handles.channelTabs) && ...
+        isfield(handles.channelTabs(channelIdx), 'kernelDrop') && isgraphics(handles.channelTabs(channelIdx).kernelDrop);
+
+    if useTabControls
+        tab = handles.channelTabs(channelIdx);
+        kernelFunction = char(string(tab.kernelDrop.Value));
+        boxConstraint = tab.boxConstraintInput.Value;
+        kernelScaleText = tab.kernelScaleInput.Value;
+        polynomialOrder = round(tab.polyOrderInput.Value);
+        standardize = logical(tab.standardizeCheck.Value);
+        crossValidate = logical(tab.crossValidateCheck.Value);
+        kFold = max(2, round(tab.kFoldInput.Value));
+        balanceClassBins = logical(tab.balanceClassCheck.Value);
+    else
+        advCfg = getChannelAdvancedConfig(handles, channelIdx);
+        kernelFunction = char(string(advCfg.kernelFunction));
+        boxConstraint = advCfg.boxConstraint;
+        kernelScaleText = advCfg.kernelScale;
+        polynomialOrder = round(advCfg.polynomialOrder);
+        standardize = logical(advCfg.standardize);
+        crossValidate = logical(advCfg.crossValidate);
+        kFold = max(2, round(advCfg.kFold));
+        balanceClassBins = logical(advCfg.balanceClassBins);
+    end
+
+    options.kernelFunction = kernelFunction;
+    options.boxConstraint = boxConstraint;
+    options.kernelScale = parseKernelScale(kernelScaleText);
+    options.polynomialOrder = polynomialOrder;
+    options.standardize = standardize;
+    options.crossValidate = crossValidate;
+    options.kFold = kFold;
+    if balanceClassBins
         options.classWeightMode = 'balanced';
     else
         options.classWeightMode = 'none';
@@ -2053,12 +2944,38 @@ function options = buildManualTrainingOptions(handles)
     options.verbose = true;
 end
 
-function sweep = buildSweepConfig(handles)
+function sweep = buildSweepConfig(handles, channelIdx)
     sweep = struct();
-    sweep.kernels = parseKernelList(handles.sweepKernelsInput.Value);
-    sweep.boxConstraints = parseNumericList(handles.sweepBoxInput.Value, true);
-    sweep.kernelScales = parseMixedScaleList(handles.sweepScaleInput.Value);
-    sweep.polynomialOrders = round(parseNumericList(handles.sweepPolyInput.Value, true));
+    if nargin < 2 || isempty(channelIdx) || ~isfinite(channelIdx)
+        channelIdx = max(1, getfieldwithdefault(handles, 'selectedChannelRow', 1));
+    end
+    channelIdx = max(1, round(channelIdx));
+
+    useTabControls = isfield(handles, 'channelTabs') && channelIdx <= numel(handles.channelTabs) && ...
+        isfield(handles.channelTabs(channelIdx), 'sweepKernelsInput') && isgraphics(handles.channelTabs(channelIdx).sweepKernelsInput);
+
+    if useTabControls
+        tab = handles.channelTabs(channelIdx);
+        kernelsRaw = tab.sweepKernelsInput.Value;
+        boxRaw = tab.sweepBoxInput.Value;
+        scaleRaw = tab.sweepScaleInput.Value;
+        polyRaw = tab.sweepPolyInput.Value;
+        tieRaw = tab.sweepTieHandlingDrop.Value;
+    else
+        advCfg = getChannelAdvancedConfig(handles, channelIdx);
+        kernelsRaw = advCfg.sweepKernels;
+        boxRaw = advCfg.sweepBoxConstraints;
+        scaleRaw = advCfg.sweepKernelScales;
+        polyRaw = advCfg.sweepPolynomialOrders;
+        tieRaw = advCfg.sweepTieHandlingLabel;
+    end
+
+    sweep.kernels = parseKernelList(kernelsRaw);
+    sweep.boxConstraints = parseNumericList(boxRaw, true);
+    sweep.kernelScales = parseMixedScaleList(scaleRaw);
+    sweep.polynomialOrders = round(parseNumericList(polyRaw, true));
+    sweep.tieHandling = parseSweepTieHandlingChoice(tieRaw);
+    sweep.tiePromptCallback = [];
 end
 
 function scale = parseKernelScale(valueText)
@@ -2139,6 +3056,100 @@ function tokens = splitListTokens(textValue)
     parts = regexp(s, '[,;\s]+', 'split');
     parts = parts(~cellfun(@isempty, parts));
     tokens = parts(:)';
+end
+
+function mode = parseSweepTieHandlingChoice(valueText)
+    mode = normalizeSweepTieHandling(valueText);
+end
+
+function mode = normalizeSweepTieHandling(valueText)
+    raw = lower(strtrim(char(string(valueText))));
+    if isempty(raw)
+        mode = 'prefer_simple';
+        return;
+    end
+
+    if strcmp(raw, 'prompt') || contains(raw, 'prompt')
+        mode = 'prompt';
+    elseif strcmp(raw, 'first') || contains(raw, 'legacy') || contains(raw, 'first')
+        mode = 'first';
+    elseif strcmp(raw, 'prefer_simple') || contains(raw, 'simple')
+        mode = 'prefer_simple';
+    else
+        error('Invalid SweepTieHandling value: "%s". Use "prefer_simple", "prompt", or "first".', raw);
+    end
+end
+
+function txt = describeSweepTieHandlingPolicy(mode)
+    switch normalizeSweepTieHandling(mode)
+        case 'prompt'
+            txt = 'Prompt user to choose tied best settings';
+        case 'first'
+            txt = 'Keep first tied setting (legacy)';
+        otherwise
+            txt = 'Prefer simpler model among tied best settings';
+    end
+end
+
+function selectedIdx = promptSweepTieSelection(fig, channelIdx, tiedIdx, sweepResults)
+    selectedIdx = [];
+    if isempty(tiedIdx)
+        return;
+    end
+    if numel(tiedIdx) == 1
+        selectedIdx = tiedIdx(1);
+        return;
+    end
+
+    listStrings = cell(numel(tiedIdx), 1);
+    for i = 1:numel(tiedIdx)
+        idx = tiedIdx(i);
+        f1 = getfieldwithdefault(sweepResults(idx), 'f1Real', NaN);
+        acc = getfieldwithdefault(sweepResults(idx), 'accuracy', NaN);
+        params = getfieldwithdefault(sweepResults(idx), 'params', struct());
+        listStrings{i} = sprintf('#%d | F1=%.4f Acc=%.4f | %s', ...
+            idx, f1, acc, formatSweepParameterSummary(params));
+    end
+
+    promptLines = { ...
+        sprintf('Channel %d has multiple tied best sweep settings.', channelIdx), ...
+        'Choose which hyperparameter set to use:' ...
+    };
+
+    try
+        [sel, ok] = listdlg( ...
+            'PromptString', promptLines, ...
+            'SelectionMode', 'single', ...
+            'ListString', listStrings, ...
+            'InitialValue', 1, ...
+            'ListSize', [920 280], ...
+            'Name', sprintf('SNAP_train Channel %d Tie Selection', channelIdx));
+        if ok && ~isempty(sel)
+            selectedIdx = tiedIdx(sel(1));
+        end
+    catch
+        selectedIdx = [];
+    end
+
+    if isempty(selectedIdx)
+        try
+            choice = uiconfirm(fig, ...
+                sprintf(['Channel %d has tied best settings.\n' ...
+                'Prompt selection was cancelled/unavailable.\n' ...
+                'How should SNAP_train continue?'], channelIdx), ...
+                'Tie Selection', ...
+                'Options', {'Prefer simpler model', 'Use first tied setting'}, ...
+                'DefaultOption', 1, ...
+                'CancelOption', 1);
+            if strcmp(choice, 'Use first tied setting')
+                selectedIdx = tiedIdx(1);
+            else
+                selectedIdx = chooseSimplestSweepCandidate(tiedIdx, sweepResults);
+            end
+        catch
+            selectedIdx = [];
+        end
+    end
 end
 
 function ch = parseChannelFromRowValue(value)
@@ -2266,6 +3277,9 @@ function [exportFiles, labelFiles] = discoverDatasetPairs(rootDir, channelIdx, v
     % Preferred path: image+CSV pairs with matching base names.
     if ~isempty(progressCb)
         progressCb(sprintf('Scanning "%s" for image+CSV pairs...', rootDir));
+        if ~isempty(channelIdx)
+            progressCb(sprintf('Channel %d pair discovery note: filename channel tags are ignored.', channelIdx));
+        end
     end
     [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, channelIdx, progressCb);
     if ~isempty(exportFiles)
@@ -2285,7 +3299,7 @@ function [exportFiles, labelFiles] = discoverDatasetPairs(rootDir, channelIdx, v
     end
 end
 
-function [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, channelIdx, progressCb)
+function [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, ~, progressCb)
     if nargin < 3
         progressCb = [];
     end
@@ -2324,11 +3338,8 @@ function [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, channelIdx, 
         progressCb(sprintf('Matching %d image(s) to %d CSV file(s) (same-name rule)...', ...
             numel(imageFiles), numel(csvFiles)));
     end
-    primaryExports = {};
-    primaryLabels = {};
-    fallbackExports = {};
-    fallbackLabels = {};
-    hasTaggedMatch = false;
+    exportFiles = {};
+    labelFiles = {};
 
     for i = 1:numel(imageFiles)
         imagePath = imageFiles{i};
@@ -2341,23 +3352,8 @@ function [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, channelIdx, 
             continue;
         end
 
-        imageChannel = parseChannelFromFilename(imagePath);
-        if ~isempty(channelIdx)
-            if isfinite(imageChannel)
-                if imageChannel ~= channelIdx
-                    continue;
-                end
-                hasTaggedMatch = true;
-            end
-        end
-
-        if ~isempty(channelIdx) && ~isfinite(imageChannel)
-            fallbackExports{end+1,1} = imagePath; %#ok<AGROW>
-            fallbackLabels{end+1,1} = labelPath; %#ok<AGROW>
-        else
-            primaryExports{end+1,1} = imagePath; %#ok<AGROW>
-            primaryLabels{end+1,1} = labelPath; %#ok<AGROW>
-        end
+        exportFiles{end+1,1} = imagePath; %#ok<AGROW>
+        labelFiles{end+1,1} = labelPath; %#ok<AGROW>
 
         if ~isempty(progressCb) && (numel(imageFiles) <= 20 || mod(i, 10) == 0)
             [~, imgBase, imgExt] = fileparts(imagePath);
@@ -2367,25 +3363,7 @@ function [exportFiles, labelFiles] = discoverImageCsvPairs(rootDir, channelIdx, 
         end
     end
     if ~isempty(progressCb)
-        progressCb(sprintf('Pairing loop complete: %d primary pair(s), %d fallback pair(s).', ...
-            numel(primaryExports), numel(fallbackExports)));
-    end
-
-    if isempty(channelIdx)
-        exportFiles = primaryExports;
-        labelFiles = primaryLabels;
-        return;
-    end
-
-    if hasTaggedMatch && ~isempty(primaryExports)
-        exportFiles = primaryExports;
-        labelFiles = primaryLabels;
-    elseif isempty(primaryExports)
-        exportFiles = fallbackExports;
-        labelFiles = fallbackLabels;
-    else
-        exportFiles = primaryExports;
-        labelFiles = primaryLabels;
+        progressCb(sprintf('Pairing loop complete: %d pair(s).', numel(exportFiles)));
     end
 end
 
@@ -2394,31 +3372,55 @@ function labelPath = findExactCsvForImageInList(imagePath, csvFiles)
     [imageDir, imageBase, ~] = fileparts(imagePath);
     imageBaseNoOme = regexprep(imageBase, '\.ome$', '', 'ignorecase');
 
-    fallbackPath = '';
+    sameDirFallbackPath = '';
+    globalExactPath = '';
+    globalExactCount = 0;
+    globalNoOmePath = '';
+    globalNoOmeCount = 0;
+
     for i = 1:numel(csvFiles)
         csvPath = csvFiles{i};
         [csvDir, csvBase, ~] = fileparts(csvPath);
-        if ~strcmpi(csvDir, imageDir)
-            continue;
-        end
 
         if strcmpi(csvBase, imageBase)
-            labelPath = csvPath;
-            return;
+            globalExactCount = globalExactCount + 1;
+            if globalExactCount == 1
+                globalExactPath = csvPath;
+            end
+            if strcmpi(csvDir, imageDir)
+                labelPath = csvPath;
+                return;
+            end
         end
 
         csvBaseNoOme = regexprep(csvBase, '\.ome$', '', 'ignorecase');
-        if isempty(fallbackPath) && strcmpi(csvBaseNoOme, imageBaseNoOme)
-            fallbackPath = csvPath;
+        if strcmpi(csvBaseNoOme, imageBaseNoOme)
+            globalNoOmeCount = globalNoOmeCount + 1;
+            if globalNoOmeCount == 1
+                globalNoOmePath = csvPath;
+            end
+            if isempty(sameDirFallbackPath) && strcmpi(csvDir, imageDir)
+                sameDirFallbackPath = csvPath;
+            end
         end
     end
 
-    if ~isempty(fallbackPath)
-        labelPath = fallbackPath;
+    if ~isempty(sameDirFallbackPath)
+        labelPath = sameDirFallbackPath;
+        return;
+    end
+
+    % If labels are stored in a separate folder, allow unique global base-name matches.
+    if globalExactCount == 1
+        labelPath = globalExactPath;
+        return;
+    end
+    if globalNoOmeCount == 1
+        labelPath = globalNoOmePath;
     end
 end
 
-function [exportFiles, labelFiles] = discoverLegacyMatPairs(rootDir, channelIdx, progressCb)
+function [exportFiles, labelFiles] = discoverLegacyMatPairs(rootDir, ~, progressCb)
     if nargin < 3
         progressCb = [];
     end
@@ -2437,9 +3439,6 @@ function [exportFiles, labelFiles] = discoverLegacyMatPairs(rootDir, channelIdx,
     end
     exportFiles = {};
     labelFiles = {};
-    fallbackExports = {};
-    fallbackLabels = {};
-    hasChannelTaggedMatch = false;
 
     for i = 1:numel(matFiles)
         matPath = matFiles{i};
@@ -2447,33 +3446,15 @@ function [exportFiles, labelFiles] = discoverLegacyMatPairs(rootDir, channelIdx,
             continue;
         end
 
-        exportChannel = parseChannelFromFilename(matPath);
-        if ~isempty(channelIdx)
-            if isfinite(exportChannel)
-                if exportChannel ~= channelIdx
-                    continue;
-                end
-            end
-        end
-
-        labelPath = findBestLabelForExport(matPath, labelCandidates, channelIdx);
+        labelPath = findBestLabelForExport(matPath, labelCandidates, []);
         if ~isempty(labelPath)
-            if ~isempty(channelIdx) && ~isfinite(exportChannel)
-                fallbackExports{end+1,1} = matPath; %#ok<AGROW>
-                fallbackLabels{end+1,1} = labelPath; %#ok<AGROW>
-            else
-                exportFiles{end+1,1} = matPath; %#ok<AGROW>
-                labelFiles{end+1,1} = labelPath; %#ok<AGROW>
-                if ~isempty(channelIdx)
-                    hasChannelTaggedMatch = true;
-                end
-            end
+            exportFiles{end+1,1} = matPath; %#ok<AGROW>
+            labelFiles{end+1,1} = labelPath; %#ok<AGROW>
         end
     end
 
-    if ~isempty(channelIdx) && ~hasChannelTaggedMatch && isempty(exportFiles)
-        exportFiles = fallbackExports;
-        labelFiles = fallbackLabels;
+    if ~isempty(progressCb)
+        progressCb(sprintf('Legacy pairing summary: %d pair(s).', numel(exportFiles)));
     end
 end
 
@@ -2872,15 +3853,29 @@ function [model, trainStats, normParams, bestParams, results] = runHyperparamete
     end
 
     combos = buildSweepCombinations(cfg);
-    results = repmat(struct('params', struct(), 'f1Real', nan, 'accuracy', nan, 'trainStats', struct()), numel(combos), 1);
+    results = repmat(struct( ...
+        'params', struct(), ...
+        'fullOptions', struct(), ...
+        'f1Real', nan, ...
+        'accuracy', nan, ...
+        'score', nan, ...
+        'trainStats', struct()), numel(combos), 1);
     emitProgress(progressCb, 'Validation sweep: evaluating %d combination(s).', numel(combos));
 
-    bestScore = -inf;
-    bestIdx = 1;
+    policy = normalizeSweepTieHandling(getfieldwithdefault(cfg, 'tieHandling', 'prefer_simple'));
+    tieTol = getfieldwithdefault(cfg, 'tieTolerance', 1e-12);
+    if ~isnumeric(tieTol) || ~isscalar(tieTol) || ~isfinite(tieTol) || tieTol < 0
+        tieTol = 1e-12;
+    end
+    tiePromptCallback = getfieldwithdefault(cfg, 'tiePromptCallback', []);
+    emitProgress(progressCb, 'Validation sweep tie policy: %s.', describeSweepTieHandlingPolicy(policy));
+
     model = [];
     trainStats = struct();
     normParams = struct();
     bestParams = baseOptions;
+    modelCache = cell(numel(combos), 1);
+    normCache = cell(numel(combos), 1);
 
     for i = 1:numel(combos)
         options = baseOptions;
@@ -2897,9 +3892,10 @@ function [model, trainStats, normParams, bestParams, results] = runHyperparamete
         end
 
         [mdl, stats, norm] = snap_helpers.classification.trainClassifier(XTrain, yTrain, options);
+        results(i).params = combos(i);
+        results(i).fullOptions = options;
+        results(i).trainStats = stats;
         if ~isfield(stats, 'success') || ~stats.success
-            results(i).params = combos(i);
-            results(i).trainStats = stats;
             emitProgress(progressCb, 'Validation sweep %d/%d failed: %s', ...
                 i, numel(combos), getfieldwithdefault(stats, 'error', 'unknown training error'));
             continue;
@@ -2907,28 +3903,38 @@ function [model, trainStats, normParams, bestParams, results] = runHyperparamete
 
         [metrics, ~] = evaluateOnValidation(mdl, norm, XVal, yVal);
 
-        results(i).params = combos(i);
         results(i).f1Real = metrics.f1Real;
         results(i).accuracy = metrics.accuracy;
-        results(i).trainStats = stats;
+        results(i).score = metrics.f1Real + 1e-3 * metrics.accuracy;
+        modelCache{i} = mdl;
+        normCache{i} = norm;
         emitProgress(progressCb, 'Validation sweep %d/%d metrics: F1(real)=%.4f, accuracy=%.4f.', ...
             i, numel(combos), metrics.f1Real, metrics.accuracy);
-
-        score = metrics.f1Real + 1e-3 * metrics.accuracy;
-        if score > bestScore
-            bestScore = score;
-            bestIdx = i;
-            model = mdl;
-            trainStats = stats;
-            normParams = norm;
-            bestParams = options;
-            emitProgress(progressCb, 'Validation sweep new best at %d/%d: %s', ...
-                i, numel(combos), formatSweepParameterSummary(bestParams));
-        end
     end
 
-    if isempty(model)
+    scored = arrayfun(@(r) double(r.score), results);
+    validIdx = find(isfinite(scored));
+    if isempty(validIdx)
         error('Hyperparameter sweep failed: all parameter combinations failed to train.');
+    end
+
+    bestScore = max(scored(validIdx));
+    tieIdx = validIdx(abs(scored(validIdx) - bestScore) <= tieTol);
+    [bestIdx, tieMsg] = resolveSweepWinnerFromTies(tieIdx, results, policy, tiePromptCallback, progressCb);
+    if isempty(bestIdx)
+        error('Hyperparameter sweep tie handling failed: no winner selected.');
+    end
+    if ~isempty(tieMsg)
+        emitProgress(progressCb, '%s', tieMsg);
+    end
+
+    model = modelCache{bestIdx};
+    trainStats = results(bestIdx).trainStats;
+    normParams = normCache{bestIdx};
+    bestParams = results(bestIdx).fullOptions;
+
+    if isempty(model)
+        error('Hyperparameter sweep selected combo #%d but its model is unavailable.', bestIdx);
     end
 
     if verbose
@@ -2938,6 +3944,114 @@ function [model, trainStats, normParams, bestParams, results] = runHyperparamete
     end
     emitProgress(progressCb, 'Validation sweep complete. Best combo #%d with F1(real)=%.4f.', ...
         bestIdx, results(bestIdx).f1Real);
+end
+
+function [bestIdx, message] = resolveSweepWinnerFromTies(tieIdx, results, policy, tiePromptCallback, progressCb)
+    bestIdx = [];
+    message = '';
+    if isempty(tieIdx)
+        return;
+    end
+    if numel(tieIdx) == 1
+        bestIdx = tieIdx(1);
+        return;
+    end
+
+    emitProgress(progressCb, 'Validation sweep tie detected: %d combination(s) share the best score.', numel(tieIdx));
+
+    reason = '';
+    switch normalizeSweepTieHandling(policy)
+        case 'first'
+            bestIdx = tieIdx(1);
+            reason = 'first encountered (legacy)';
+        case 'prompt'
+            if isa(tiePromptCallback, 'function_handle')
+                try
+                    picked = tiePromptCallback(tieIdx, results);
+                    if isnumeric(picked) && isscalar(picked) && any(tieIdx == picked)
+                        bestIdx = picked;
+                        reason = 'user selection';
+                    end
+                catch ME
+                    emitProgress(progressCb, 'Tie prompt callback failed: %s', ME.message);
+                end
+            end
+            if isempty(bestIdx)
+                bestIdx = chooseSimplestSweepCandidate(tieIdx, results);
+                reason = 'fallback to simpler model (prompt unavailable/cancelled)';
+            end
+        otherwise
+            bestIdx = chooseSimplestSweepCandidate(tieIdx, results);
+            reason = 'prefer simpler model';
+    end
+
+    message = sprintf('Validation sweep tie resolved: selected combo #%d via %s.', bestIdx, reason);
+end
+
+function bestIdx = chooseSimplestSweepCandidate(tieIdx, results)
+    n = numel(tieIdx);
+    complexity = inf(n, 5);
+    for i = 1:n
+        idx = tieIdx(i);
+        p = getfieldwithdefault(results(idx), 'params', struct());
+        kernel = char(string(getfieldwithdefault(p, 'kernelFunction', 'rbf')));
+        complexity(i, 1) = sweepKernelComplexityRank(kernel);
+
+        polyOrder = getfieldwithdefault(p, 'polynomialOrder', 3);
+        if ~isnumeric(polyOrder) || ~isscalar(polyOrder) || ~isfinite(polyOrder)
+            polyOrder = 3;
+        end
+        if strcmpi(kernel, 'polynomial')
+            complexity(i, 2) = double(polyOrder);
+        else
+            complexity(i, 2) = 0;
+        end
+
+        boxC = getfieldwithdefault(p, 'boxConstraint', 1);
+        if ~isnumeric(boxC) || ~isscalar(boxC) || ~isfinite(boxC) || boxC <= 0
+            boxC = inf;
+        end
+        complexity(i, 3) = double(boxC);
+
+        complexity(i, 4) = sweepScaleComplexity(getfieldwithdefault(p, 'kernelScale', 'auto'));
+        complexity(i, 5) = idx; % deterministic final tie-breaker
+    end
+
+    [~, order] = sortrows(complexity, [1 2 3 4 5]);
+    bestIdx = tieIdx(order(1));
+end
+
+function rankVal = sweepKernelComplexityRank(kernelName)
+    kernel = lower(strtrim(char(string(kernelName))));
+    switch kernel
+        case 'linear'
+            rankVal = 1;
+        case {'rbf', 'gaussian'}
+            rankVal = 2;
+        case 'polynomial'
+            rankVal = 3;
+        otherwise
+            rankVal = 4;
+    end
+end
+
+function c = sweepScaleComplexity(scaleValue)
+    if ischar(scaleValue) || isstring(scaleValue)
+        token = lower(strtrim(char(string(scaleValue))));
+        if strcmp(token, 'auto')
+            c = 0;
+            return;
+        end
+        val = str2double(token);
+    else
+        val = scaleValue;
+    end
+
+    if ~isnumeric(val) || ~isscalar(val) || ~isfinite(val) || val <= 0
+        c = inf;
+        return;
+    end
+    c = abs(log(double(val)));
 end
 
 function combos = buildSweepCombinations(cfg)
@@ -3634,6 +4748,22 @@ function [X, featureNames, validMask, extractionInfo, selectedFeatures, customEx
             fitData, selectedFeatures, featureInfo, customExpressions);
         emitProgress(progressCb, 'Training feature matrix built: %d candidate rows, %d feature columns.', ...
             size(X, 1), size(X, 2));
+        if isstruct(extractionInfo) && isfield(extractionInfo, 'modelStats') && ...
+                isstruct(extractionInfo.modelStats) && ...
+                isfield(extractionInfo.modelStats, 'requested') && extractionInfo.modelStats.requested
+            ms = extractionInfo.modelStats;
+            if isfield(ms, 'augmented') && ms.augmented && isfield(ms, 'summary') && isstruct(ms.summary)
+                emitProgress(progressCb, ...
+                    ['Model-stat augmentation: computed %d/%d windows ', ...
+                     '(missingWindow=%d, modelFailures=%d).'], ...
+                    getfieldwithdefault(ms.summary, 'nComputed', 0), ...
+                    getfieldwithdefault(ms.summary, 'nTotal', 0), ...
+                    getfieldwithdefault(ms.summary, 'nMissingWindow', 0), ...
+                    getfieldwithdefault(ms.summary, 'nModelFailures', 0));
+            else
+                emitProgress(progressCb, 'Model-stat features requested: using existing fields (no augmentation run).');
+            end
+        end
 
         allNaNFeatures = {};
         if isstruct(extractionInfo) && isfield(extractionInfo, 'featuresAllNaN') && ~isempty(extractionInfo.featuresAllNaN)

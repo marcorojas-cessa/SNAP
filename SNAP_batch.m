@@ -57,6 +57,7 @@ end
 
 
 %% Parse inputs
+maxClassifierChannels = 5;
 p = inputParser;
 addRequired(p, 'inputDir', @ischar);
 addRequired(p, 'paramFile', @ischar);
@@ -65,11 +66,11 @@ addParameter(p, 'ExportFormat', 'TIFF', @ischar);
 addParameter(p, 'ExportVisualizations', false, @islogical); % Export annotated PNG images
 addParameter(p, 'ProgressHandle', [], @(x) isempty(x) || isstruct(x)); % For GUI progress updates
 addParameter(p, 'ExportOptions', struct(), @isstruct); % Export options from GUI
-addParameter(p, 'Classifiers', cell(1, 10), @iscell); % Classifiers per channel
-addParameter(p, 'ClassifierFeatures', cell(1, 10), @iscell); % Features per classifier
-addParameter(p, 'ClassifierFeatureInfo', cell(1, 10), @iscell); % Feature info per classifier
-addParameter(p, 'ClassifierCustomExpressions', cell(1, 10), @iscell); % Custom expressions per classifier
-addParameter(p, 'ClassifierNormParams', cell(1, 10), @iscell); % Normalization params per classifier
+addParameter(p, 'Classifiers', cell(1, maxClassifierChannels), @iscell); % Classifiers per channel
+addParameter(p, 'ClassifierFeatures', cell(1, maxClassifierChannels), @iscell); % Features per classifier
+addParameter(p, 'ClassifierFeatureInfo', cell(1, maxClassifierChannels), @iscell); % Feature info per classifier
+addParameter(p, 'ClassifierCustomExpressions', cell(1, maxClassifierChannels), @iscell); % Custom expressions per classifier
+addParameter(p, 'ClassifierNormParams', cell(1, maxClassifierChannels), @iscell); % Normalization params per classifier
 parse(p, inputDir, paramFile, extraArgs{:});
 
 inputDir = p.Results.inputDir;
@@ -157,14 +158,14 @@ try
         
         % Enable classification for channels that have classifiers
         if ~isfield(params, 'classifyEnabled')
-            params.classifyEnabled = cell(1, 10);
-            params.classifyFilterNoise = cell(1, 10);
-            for c = 1:10
+            params.classifyEnabled = cell(1, maxClassifierChannels);
+            params.classifyFilterNoise = cell(1, maxClassifierChannels);
+            for c = 1:maxClassifierChannels
                 params.classifyEnabled{c} = false;
                 params.classifyFilterNoise{c} = true;
             end
         end
-        for c = 1:min(numel(classifiers), 10)
+        for c = 1:min(numel(classifiers), maxClassifierChannels)
             if ~isempty(classifiers{c})
                 params.classifyEnabled{c} = true;
                 params.classifyFilterNoise{c} = true;
@@ -175,7 +176,11 @@ try
         end
     end
 catch ME
-    error('Failed to load parameter file: %s', ME.message);
+    loc = '';
+    if ~isempty(ME.stack)
+        loc = sprintf(' [%s:%d]', ME.stack(1).name, ME.stack(1).line);
+    end
+    error('Failed to load parameter file: %s%s', ME.message, loc);
 end
 
 %% Find all subfolders (each represents one image set)
@@ -1833,6 +1838,8 @@ function createBatchGUI()
     % Initialize handles structure
     handles = struct();
     handles.fig = fig;
+    handles.maxClassifierChannels = 5;
+    handles.activeClassifierRows = 2;
     
     % --- Row 1: Input Directory ---
     inputDirPanel = uipanel(contentGrid, 'BorderType', 'none');
@@ -1920,43 +1927,46 @@ function createBatchGUI()
     % --- Row 5: Classifier Loading (optional) ---
     classifierPanel = uipanel(contentGrid, 'Title', 'Classifiers (Optional)', 'FontWeight', 'bold');
     classifierPanel.Layout.Row = 5;
-    classifierGrid = uigridlayout(classifierPanel, [2, 4]);
-    classifierGrid.RowHeight = {'fit', 'fit'};
+    classifierGrid = uigridlayout(classifierPanel, [handles.maxClassifierChannels, 4]);
+    classifierGrid.RowHeight = repmat({'fit'}, 1, handles.maxClassifierChannels);
     classifierGrid.ColumnWidth = {'fit', '1x', '1x', 'fit'};
     classifierGrid.Padding = [10 10 10 10];
     classifierGrid.RowSpacing = 8;
     classifierGrid.ColumnSpacing = 10;
-    
-    lblClassifier1 = uilabel(classifierGrid, 'Text', 'Channel 1:');
-    lblClassifier1.Layout.Row = 1;
-    lblClassifier1.Layout.Column = 1;
-    handles.classifier1Edit = uieditfield(classifierGrid, 'Value', '', 'Editable', 'off', ...
-        'Tooltip', 'Classifier for channel 1 (optional)');
-    handles.classifier1Edit.Layout.Row = 1; handles.classifier1Edit.Layout.Column = 2;
-    handles.classifier1BrowseBtn = uibutton(classifierGrid, 'Text', 'Browse...', ...
-        'ButtonPushedFcn', @(src,evt) browseClassifier(fig, 1));
-    handles.classifier1BrowseBtn.Layout.Row = 1; handles.classifier1BrowseBtn.Layout.Column = 3;
-    handles.classifier1ClearBtn = uibutton(classifierGrid, 'Text', 'Clear', ...
-        'ButtonPushedFcn', @(src,evt) clearClassifier(fig, 1));
-    handles.classifier1ClearBtn.Layout.Row = 1; handles.classifier1ClearBtn.Layout.Column = 4;
-    
-    lblClassifier2 = uilabel(classifierGrid, 'Text', 'Channel 2:');
-    lblClassifier2.Layout.Row = 2;
-    lblClassifier2.Layout.Column = 1;
-    handles.classifier2Edit = uieditfield(classifierGrid, 'Value', '', 'Editable', 'off', ...
-        'Tooltip', 'Classifier for channel 2 (optional)');
-    handles.classifier2Edit.Layout.Row = 2; handles.classifier2Edit.Layout.Column = 2;
-    handles.classifier2BrowseBtn = uibutton(classifierGrid, 'Text', 'Browse...', ...
-        'ButtonPushedFcn', @(src,evt) browseClassifier(fig, 2));
-    handles.classifier2BrowseBtn.Layout.Row = 2; handles.classifier2BrowseBtn.Layout.Column = 3;
-    handles.classifier2ClearBtn = uibutton(classifierGrid, 'Text', 'Clear', ...
-        'ButtonPushedFcn', @(src,evt) clearClassifier(fig, 2));
-    handles.classifier2ClearBtn.Layout.Row = 2; handles.classifier2ClearBtn.Layout.Column = 4;
+
+    handles.classifierGrid = classifierGrid;
+    handles.classifierLabels = cell(1, handles.maxClassifierChannels);
+    handles.classifierPathEdits = cell(1, handles.maxClassifierChannels);
+    handles.classifierBrowseBtns = cell(1, handles.maxClassifierChannels);
+    handles.classifierClearBtns = cell(1, handles.maxClassifierChannels);
+
+    for ch = 1:handles.maxClassifierChannels
+        handles.classifierLabels{ch} = uilabel(classifierGrid, 'Text', sprintf('Channel %d:', ch));
+        handles.classifierLabels{ch}.Layout.Row = ch;
+        handles.classifierLabels{ch}.Layout.Column = 1;
+
+        handles.classifierPathEdits{ch} = uieditfield(classifierGrid, 'Value', '', 'Editable', 'off', ...
+            'Tooltip', sprintf('Classifier for channel %d (optional)', ch));
+        handles.classifierPathEdits{ch}.Layout.Row = ch;
+        handles.classifierPathEdits{ch}.Layout.Column = 2;
+
+        handles.classifierBrowseBtns{ch} = uibutton(classifierGrid, 'Text', 'Browse...', ...
+            'ButtonPushedFcn', @(~,~) browseClassifier(fig, ch));
+        handles.classifierBrowseBtns{ch}.Layout.Row = ch;
+        handles.classifierBrowseBtns{ch}.Layout.Column = 3;
+
+        handles.classifierClearBtns{ch} = uibutton(classifierGrid, 'Text', 'Clear', ...
+            'ButtonPushedFcn', @(~,~) clearClassifier(fig, ch));
+        handles.classifierClearBtns{ch}.Layout.Row = ch;
+        handles.classifierClearBtns{ch}.Layout.Column = 4;
+    end
     
     % Initialize classifier storage
-    handles.classifiers = cell(1, 2);
-    handles.classifierFeatures = cell(1, 2);
-    handles.classifierFeatureInfo = cell(1, 2);
+    handles.classifiers = cell(1, handles.maxClassifierChannels);
+    handles.classifierFeatures = cell(1, handles.maxClassifierChannels);
+    handles.classifierFeatureInfo = cell(1, handles.maxClassifierChannels);
+    handles.classifierCustomExpressions = repmat({struct('name', {}, 'expression', {})}, 1, handles.maxClassifierChannels);
+    handles.classifierNormParams = repmat({struct('mu', [], 'sigma', [], 'standardized', false)}, 1, handles.maxClassifierChannels);
     
     % --- Row 6: Unused placeholder (was row 5) ---
     placeholderPanel6 = uipanel(contentGrid, 'BorderType', 'none');
@@ -2069,6 +2079,7 @@ function createBatchGUI()
     
     % Store handles in figure
     guidata(fig, handles);
+    updateClassifierRowVisibility(fig, handles.activeClassifierRows);
 end
 
 %% GUI Callback Functions
@@ -2091,8 +2102,11 @@ function browseParamFile(fig)
     handles = guidata(fig);
     [file, path] = uigetfile('*.mat', 'Select Parameter File from SNAP');
     if file ~= 0
-        handles.paramFileEdit.Value = fullfile(path, file);
+        fullPath = fullfile(path, file);
+        handles.paramFileEdit.Value = fullPath;
         guidata(fig, handles);
+        detectedChannels = inferParameterFileNumChannels(fullPath, handles.maxClassifierChannels);
+        updateClassifierRowVisibility(fig, detectedChannels);
         updateUIState(fig);
         % Auto-scan if input dir is also loaded
         if ~isempty(handles.inputDirEdit.Value)
@@ -2113,6 +2127,9 @@ end
 
 function browseClassifier(fig, channelIdx)
     handles = guidata(fig);
+    if ~isfield(handles, 'maxClassifierChannels') || channelIdx < 1 || channelIdx > handles.maxClassifierChannels
+        return;
+    end
     [file, path] = uigetfile('*.mat', sprintf('Select Classifier for Channel %d', channelIdx));
     if file ~= 0
         filepath = fullfile(path, file);
@@ -2128,10 +2145,12 @@ function browseClassifier(fig, channelIdx)
             
             % Store custom expressions and norm params
             if ~isfield(handles, 'classifierCustomExpressions')
-                handles.classifierCustomExpressions = cell(1, 2);
+                handles.classifierCustomExpressions = repmat({struct('name', {}, 'expression', {})}, ...
+                    1, handles.maxClassifierChannels);
             end
             if ~isfield(handles, 'classifierNormParams')
-                handles.classifierNormParams = cell(1, 2);
+                handles.classifierNormParams = repmat({struct('mu', [], 'sigma', [], 'standardized', false)}, ...
+                    1, handles.maxClassifierChannels);
             end
             handles.classifierCustomExpressions{channelIdx} = customExpr;
             handles.classifierNormParams{channelIdx} = normParams;
@@ -2144,15 +2163,11 @@ function browseClassifier(fig, channelIdx)
             else
                 displayStr = sprintf('%s (%d features, %s)', file, nBase, fittingMethod);
             end
-            
-            if channelIdx == 1
-                handles.classifier1Edit.Value = displayStr;
-            else
-                handles.classifier2Edit.Value = displayStr;
-            end
+
+            handles.classifierPathEdits{channelIdx}.Value = displayStr;
             
             guidata(fig, handles);
-            appendLog(handles.progressLog, sprintf('Loaded classifier for Channel %d: %s', channelIdx, file));
+            appendLog(struct('fig', fig), sprintf('Loaded classifier for Channel %d: %s', channelIdx, file));
         else
             uialert(fig, 'Failed to load classifier', 'Load Error');
         end
@@ -2161,6 +2176,9 @@ end
 
 function clearClassifier(fig, channelIdx)
     handles = guidata(fig);
+    if ~isfield(handles, 'maxClassifierChannels') || channelIdx < 1 || channelIdx > handles.maxClassifierChannels
+        return;
+    end
     handles.classifiers{channelIdx} = [];
     handles.classifierFeatures{channelIdx} = {};
     handles.classifierFeatureInfo{channelIdx} = struct();
@@ -2171,14 +2189,103 @@ function clearClassifier(fig, channelIdx)
     if isfield(handles, 'classifierNormParams')
         handles.classifierNormParams{channelIdx} = struct('mu', [], 'sigma', [], 'standardized', false);
     end
-    
-    if channelIdx == 1
-        handles.classifier1Edit.Value = '';
-    else
-        handles.classifier2Edit.Value = '';
-    end
+
+    handles.classifierPathEdits{channelIdx}.Value = '';
     
     guidata(fig, handles);
+end
+
+function updateClassifierRowVisibility(fig, numChannels)
+    handles = guidata(fig);
+    if ~isfield(handles, 'maxClassifierChannels') || ~isfield(handles, 'classifierGrid') || ...
+            ~isfield(handles, 'classifierLabels') || ~isfield(handles, 'classifierPathEdits') || ...
+            ~isfield(handles, 'classifierBrowseBtns') || ~isfield(handles, 'classifierClearBtns')
+        return;
+    end
+
+    nRows = max(1, min(handles.maxClassifierChannels, round(double(numChannels))));
+    rowHeights = repmat({0}, 1, handles.maxClassifierChannels);
+
+    for ch = 1:handles.maxClassifierChannels
+        showRow = ch <= nRows;
+        if showRow
+            visState = 'on';
+            rowHeights{ch} = 'fit';
+        else
+            visState = 'off';
+            rowHeights{ch} = 0;
+        end
+
+        if ch <= numel(handles.classifierLabels) && ~isempty(handles.classifierLabels{ch}) && isvalid(handles.classifierLabels{ch})
+            handles.classifierLabels{ch}.Visible = visState;
+        end
+        if ch <= numel(handles.classifierPathEdits) && ~isempty(handles.classifierPathEdits{ch}) && isvalid(handles.classifierPathEdits{ch})
+            handles.classifierPathEdits{ch}.Visible = visState;
+        end
+        if ch <= numel(handles.classifierBrowseBtns) && ~isempty(handles.classifierBrowseBtns{ch}) && isvalid(handles.classifierBrowseBtns{ch})
+            handles.classifierBrowseBtns{ch}.Visible = visState;
+        end
+        if ch <= numel(handles.classifierClearBtns) && ~isempty(handles.classifierClearBtns{ch}) && isvalid(handles.classifierClearBtns{ch})
+            handles.classifierClearBtns{ch}.Visible = visState;
+        end
+    end
+
+    handles.classifierGrid.RowHeight = rowHeights;
+    handles.activeClassifierRows = nRows;
+    guidata(fig, handles);
+end
+
+function nChannels = inferParameterFileNumChannels(paramFile, fallbackMax)
+    if nargin < 2 || isempty(fallbackMax)
+        fallbackMax = 5;
+    end
+    nChannels = max(1, round(double(fallbackMax)));
+
+    if ~(ischar(paramFile) || isstring(paramFile))
+        return;
+    end
+    paramFile = char(string(paramFile));
+    if exist(paramFile, 'file') ~= 2
+        return;
+    end
+
+    try
+        [params, ~] = snap_helpers.classification.loadParameterStruct(paramFile);
+        caps = snap_helpers.classification.resolveChannelCapabilities(params, 'IncludeFeatureInfo', false);
+        if ~isempty(caps)
+            nChannels = numel(caps);
+            return;
+        end
+    catch
+        % Fallback below.
+    end
+
+    try
+        paramData = load(paramFile);
+        if isfield(paramData, 'batchConfig') && isfield(paramData.batchConfig, 'parameters')
+            params = paramData.batchConfig.parameters;
+        elseif isfield(paramData, 'paramData') && isfield(paramData.paramData, 'parameters')
+            params = paramData.paramData.parameters;
+        elseif isfield(paramData, 'lastUsed')
+            params = paramData.lastUsed;
+        else
+            params = struct();
+        end
+
+        if isstruct(params)
+            if isfield(params, 'numChannels') && isnumeric(params.numChannels) && isfinite(params.numChannels)
+                nChannels = round(double(params.numChannels));
+            elseif isfield(params, 'gaussFitMethod')
+                if iscell(params.gaussFitMethod) || isstring(params.gaussFitMethod)
+                    nChannels = numel(params.gaussFitMethod);
+                end
+            end
+        end
+    catch
+        % Keep fallback.
+    end
+
+    nChannels = max(1, min(fallbackMax, nChannels));
 end
 
 function updateUIState(fig)
@@ -2281,6 +2388,20 @@ function startBatchProcessing(fig)
     handles.exportChannelDataCheck.Enable = 'off';
     handles.exportClusteredDataCheck.Enable = 'off';
     handles.exportVisualizationsCheck.Enable = 'off';
+    if isfield(handles, 'classifierBrowseBtns')
+        for ch = 1:numel(handles.classifierBrowseBtns)
+            if ~isempty(handles.classifierBrowseBtns{ch}) && isvalid(handles.classifierBrowseBtns{ch})
+                handles.classifierBrowseBtns{ch}.Enable = 'off';
+            end
+        end
+    end
+    if isfield(handles, 'classifierClearBtns')
+        for ch = 1:numel(handles.classifierClearBtns)
+            if ~isempty(handles.classifierClearBtns{ch}) && isvalid(handles.classifierClearBtns{ch})
+                handles.classifierClearBtns{ch}.Enable = 'off';
+            end
+        end
+    end
     handles.statusLabel.Text = 'Processing...';
     handles.statusLabel.FontColor = [0 0 0.8];
     handles.logArea.Value = {...
@@ -2395,6 +2516,20 @@ function startBatchProcessing(fig)
             handles.exportChannelDataCheck.Enable = 'on';
             handles.exportClusteredDataCheck.Enable = 'on';
             handles.exportVisualizationsCheck.Enable = 'on';
+            if isfield(handles, 'classifierBrowseBtns')
+                for ch = 1:numel(handles.classifierBrowseBtns)
+                    if ~isempty(handles.classifierBrowseBtns{ch}) && isvalid(handles.classifierBrowseBtns{ch})
+                        handles.classifierBrowseBtns{ch}.Enable = 'on';
+                    end
+                end
+            end
+            if isfield(handles, 'classifierClearBtns')
+                for ch = 1:numel(handles.classifierClearBtns)
+                    if ~isempty(handles.classifierClearBtns{ch}) && isvalid(handles.classifierClearBtns{ch})
+                        handles.classifierClearBtns{ch}.Enable = 'on';
+                    end
+                end
+            end
             guidata(fig, handles);
         catch
             % GUI closed

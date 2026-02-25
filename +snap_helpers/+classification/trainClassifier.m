@@ -126,9 +126,29 @@ function [model, trainStats, normParams] = trainClassifier(X, labels, options)
         model = [];
         return;
     end
+
+    % Complex-valued features are invalid for fitcsvm.
+    % Convert significant imaginary entries to NaN, then continue with the
+    % standard invalid-row filtering path.
+    if ~isreal(X)
+        imagPart = imag(X);
+        complexMask = isfinite(imagPart) & (abs(imagPart) > 1e-12);
+        nComplex = sum(complexMask(:));
+        trainStats.nComplexValues = nComplex;
+        if nComplex > 0
+            X(complexMask) = NaN;
+            if options.verbose
+                fprintf('  Warning: %d complex feature value(s) detected and marked as NaN\n', nComplex);
+            end
+        end
+        X = real(X);
+    else
+        trainStats.nComplexValues = 0;
+    end
+    X = real(X);
     
-    % Remove samples with NaN features
-    validMask = all(~isnan(X), 2) & ~isnan(labels);
+    % Remove samples with non-finite features
+    validMask = all(isfinite(X), 2) & isfinite(labels);
     X = X(validMask, :);
     labels = labels(validMask);
     

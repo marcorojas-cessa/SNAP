@@ -72,8 +72,6 @@ function handles = updateLivePreview(fig_handle)
         end
         guidata(handles.fig, handles);
 
-        maxima_counts_text = {};
-        
         % --- Determine max Z dimension from ALL loaded images ---
         max_z_dim = 1; 
         if isfield(handles, 'rawDIC') && ~isempty(handles.rawDIC)
@@ -248,9 +246,6 @@ function handles = updateLivePreview(fig_handle)
                 handles.maximaCoords{k} = final_coords;
                 handles.gaussFitResults{k} = fit_results;
 
-                colorName = handles.maximaColorDrops(k).Value;
-                count = size(final_coords, 1);
-                maxima_counts_text{end+1} = sprintf('Channel %d (%s): %d', k, colorName, count);
             else
                 handles.maximaCoords{k} = [];
                 handles.gaussFitResults{k} = [];
@@ -346,19 +341,23 @@ function handles = updateLivePreview(fig_handle)
                             handles.gaussFitResults{ch} = [];
                         end
                     end
-                    colorName = handles.maximaColorDrops(ch).Value;
-                    count = size(filtered_coords, 1);
-                    for i = 1:length(maxima_counts_text)
-                        if contains(maxima_counts_text{i}, ['Channel ' num2str(ch)])
-                            maxima_counts_text{i} = sprintf('Channel %d (%s): %d', ch, colorName, count);
-                            break;
-                        end
-                    end
                 end
             end
         end
-        
-        handles.maximaCountLabel.Text = [{'Local Maxima Counts:'}; maxima_counts_text'];
+
+        [totalMaximaCount, perChannelSummary] = buildMaximaSummary(handles, numActiveChannels);
+        if isempty(perChannelSummary)
+            perChannelText = 'none';
+        else
+            perChannelText = strjoin(perChannelSummary, ' | ');
+        end
+
+        if isfield(handles, 'maximaTotalLabel') && isvalid(handles.maximaTotalLabel)
+            handles.maximaTotalLabel.Text = sprintf('Total Maxima Counts: %d', totalMaximaCount);
+            handles.maximaCountLabel.Text = ['Per-channel: ' perChannelText];
+        else
+            handles.maximaCountLabel.Text = sprintf('Total Maxima Counts: %d | Per-channel: %s', totalMaximaCount, perChannelText);
+        end
         
         % Update Global Z Slider
         if max_z_dim > 1
@@ -488,6 +487,27 @@ function handles = updateLivePreview(fig_handle)
                     'fitResults', [], ...
                     'maximaSignature', '', ...
                     'fitSignature', '');
+            end
+        end
+    end
+
+    function [totalCount, summaryLines] = buildMaximaSummary(handlesIn, numChannels)
+        totalCount = 0;
+        summaryLines = {};
+        for channelIdx = 1:numChannels
+            enabled = channelIdx <= numel(handlesIn.maximaEnabledChecks) && handlesIn.maximaEnabledChecks(channelIdx).Value;
+            if enabled
+                coords = [];
+                if channelIdx <= numel(handlesIn.maximaCoords) && ~isempty(handlesIn.maximaCoords{channelIdx})
+                    coords = handlesIn.maximaCoords{channelIdx};
+                end
+                count = size(coords, 1);
+                totalCount = totalCount + count;
+                colorName = 'N/A';
+                if channelIdx <= numel(handlesIn.maximaColorDrops) && isvalid(handlesIn.maximaColorDrops(channelIdx))
+                    colorName = char(string(handlesIn.maximaColorDrops(channelIdx).Value));
+                end
+                summaryLines{end+1} = sprintf('Ch%d (%s): %d', channelIdx, colorName, count); %#ok<AGROW>
             end
         end
     end

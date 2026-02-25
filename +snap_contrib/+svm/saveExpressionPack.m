@@ -8,9 +8,21 @@ function saveExpressionPack(pack, outputPath)
     if nargin < 2 || isempty(outputPath)
         error('saveExpressionPack:MissingOutputPath', 'Provide outputPath.');
     end
-    if ~isstruct(pack) || ~isfield(pack, 'channelPacks')
+    if ~isstruct(pack)
         error('saveExpressionPack:InvalidPack', ...
             'Input pack must be a struct from snap_contrib.svm.buildExpressionPack.');
+    end
+
+    try
+        [pack, normalizeReport] = snap_helpers.classification.normalizeExpressionPack(pack);
+        if ~isempty(normalizeReport.warnings)
+            warning('saveExpressionPack:NormalizedWithWarnings', ...
+                'Expression pack normalized with warnings: %s', ...
+                strjoin(normalizeReport.warnings, ' | '));
+        end
+    catch ME
+        error('saveExpressionPack:InvalidPackSchema', ...
+            'Expression pack schema is invalid: %s', ME.message);
     end
 
     outputPath = char(string(outputPath));

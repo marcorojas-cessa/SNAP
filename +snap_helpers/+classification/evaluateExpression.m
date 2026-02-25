@@ -7,6 +7,8 @@ function result = evaluateExpression(expression, data, availableFeatures)
 %
 % Allows users to define custom features as mathematical expressions
 % combining base features. Supports standard MATLAB math operations.
+% Scalar operators (*, /, ^) are automatically vectorized to element-wise
+% operators for per-spot feature arrays.
 %
 % SUPPORTED OPERATIONS:
 %   Arithmetic:  +, -, *, /, ^, ()
@@ -40,7 +42,8 @@ function result = evaluateExpression(expression, data, availableFeatures)
     if isempty(expression) || ~ischar(expression) && ~isstring(expression)
         error('Expression must be a non-empty string');
     end
-    expression = char(expression);
+    originalExpression = char(expression);
+    expression = autoVectorizeExpression(originalExpression);
     
     % Get number of samples
     if istable(data)
@@ -119,9 +122,18 @@ function result = evaluateExpression(expression, data, availableFeatures)
         elseif numel(result) ~= nSamples
             error('Expression result size mismatch');
         end
+
+        % Force real-valued, finite output for downstream SVM compatibility.
+        imagPart = imag(result);
+        complexMask = isfinite(imagPart) & (abs(imagPart) > 1e-12);
+        if any(complexMask)
+            result(complexMask) = NaN;
+        end
+        result = real(result);
+        result(~isfinite(result)) = NaN;
         
     catch ME
-        warning('Failed to evaluate expression "%s": %s', expression, ME.message);
+        warning('Failed to evaluate expression "%s": %s', originalExpression, ME.message);
         result = nan(nSamples, 1);
     end
 end
@@ -373,4 +385,14 @@ function v = scalarizeNumericValue(raw)
     else
         v = mean(finiteVals);
     end
+end
+
+function exprOut = autoVectorizeExpression(exprIn)
+    exprOut = char(string(exprIn));
+
+    % Convert scalar matrix operators to element-wise operators so
+    % expressions evaluate correctly over per-spot feature vectors.
+    exprOut = regexprep(exprOut, '(?<!\.)\^', '.^');
+    exprOut = regexprep(exprOut, '(?<!\.)\*', '.*');
+    exprOut = regexprep(exprOut, '(?<!\.)/(?!/)', './');
 end

@@ -1,0 +1,141 @@
+SNAP Custom SVM Pack Feature Reference
+=====================================
+
+Generated: 2026-02-25 14:13
+Source pack expressions: /Volumes/RothsteinLab2/Marco/SNAP/_current/examples/svm_feature_pack/snap_svm_expression_pack_expressions.csv
+This is a concise glossary for the current example custom pack.
+
+Total features in this pack: 16 base + 80 custom = 96
+
+BASE FEATURES (focused mode, Distorted 3D Gaussian channel)
+------------------------------------------------------------
+- integrated_intensity: Sum of background-corrected signal in the local fit window.
+- background: Estimated local background intensity near the candidate spot.
+- snr: Signal-to-noise proxy (signal/background). Higher usually means cleaner spots.
+- r_squared: Goodness-of-fit score for the model (closer to 1 is generally better).
+- amplitude: Peak fitted intensity of the spot model.
+- sigma_x: Fitted Gaussian width along x (spot spread in x).
+- sigma_y: Fitted Gaussian width along y (spot spread in y).
+- sigma_z: Fitted Gaussian width along z (axial spread).
+- sigma_sum: Total spread proxy from sigma terms (larger means broader spot).
+- sigma_product: Area/volume-style spread proxy from sigma product.
+- sigma_xy_ratio: Ellipticity proxy from sigma_x/sigma_y (1 means symmetric in xy).
+- sigma_z_ratio: Axial-to-lateral elongation proxy.
+- amplitude_over_background: Peak contrast above background.
+- rho_xy: Fit correlation term between x and y (distortion/coupling indicator).
+- rho_xz: Fit correlation term between x and z.
+- rho_yz: Fit correlation term between y and z.
+
+CUSTOM EXPRESSIONS (scientific meaning)
+---------------------------------------
+
+Signal and Background (10)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+- log_integrated_intensity: Stabilizes heavy-tailed spot intensity distributions.
+- log_background: Compresses local background dynamic range.
+- log_snr_proxy: Background-normalized signal proxy with log compression.
+- poisson_snr_proxy: Poisson-like contrast proxy using signal+background variance scaling.
+- shot_noise_proxy: Approximate Poisson-dominated contrast score.
+- background_fraction: Fraction of local intensity explained by background.
+- signal_fraction: Fraction of total local intensity assigned to spot signal.
+- contrast_to_background: Classical local contrast ratio.
+- background_subtracted_log_signal: Log-compressed signal after background subtraction.
+- inverse_bg_penalty: Intensity penalized quadratically by background burden.
+
+Fit Quality Couplings (9)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+- quality_weighted_snr: Couples fit quality and normalized signal strength.
+- quality_penalty: Penalizes bright but poorly fit detections.
+- quality_bg_compound: High when both fit quality and background-normalized intensity are high.
+- quality_vs_size_penalty: Rewards compact, high-quality fits.
+- snr_vs_size_penalty: SNR penalized by broad spatial footprint.
+- snr_quality_harmonic: Harmonic coupling of SNR and fit quality (penalizes imbalance).
+- quality_bg_penalty: Penalizes otherwise good fits in high local background.
+- quality_signal_fraction: Joint score for fit quality and local signal purity.
+- quality_signal_harmonic_fraction: Harmonic coupling of fit quality and local signal-purity fraction.
+
+Morphology and Compactness (15)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- ellipticity_log: Shape anisotropy magnitude in XY.
+- ellipticity_ratio_xy: Raw XY sigma ratio (ellipticity).
+- psf_roundness_penalty: Dimensionless PSF roundness deviation in XY.
+- psf_roundness_score: Higher when lateral PSF widths are balanced.
+- compactness_2d: Intensity concentration per estimated PSF area.
+- size_penalized_snr_2d: Normalized signal penalized by broad PSF widths.
+- quality_per_sigma_sum_2d: Fit quality normalized by spot footprint.
+- quality_compactness_coupled_2d: 2D quality-intensity score penalized by spread and local background.
+- intensity_over_sigma_product: Signal concentration using derived sigma-product.
+- sigma_product_over_intensity: Inverse concentration measure; high for diffuse spots.
+- sigma_sum_over_intensity: Diffuse-width penalty relative to signal.
+- thompson_var_xy_proxy: Localization-variance proxy inspired by Thompson et al. (2002).
+- thompson_precision_xy_proxy: Square-root localization precision proxy in XY.
+- thompson_information_xy: Inverse XY precision proxy (higher implies better localization information).
+- localization_information_density_xy: Localization-information proxy per lateral spread unit.
+
+3D Anisotropy (9)
+~~~~~~~~~~~~~~~~~
+- compactness_3d: Intensity concentration per estimated PSF volume.
+- z_anisotropy_abs: Axial-vs-lateral anisotropy magnitude.
+- size_penalized_snr_3d: 3D normalized signal penalized by total width.
+- sigma_z_compactness: Relative axial broadening.
+- quality_anisotropy_3d: Quality penalized by excessive axial anisotropy.
+- thompson_var_z_proxy: Axial localization-variance proxy inspired by Thompson-style scaling.
+- thompson_precision_z_proxy: Square-root axial precision proxy.
+- thompson_information_z: Inverse axial precision proxy.
+- axial_to_lateral_precision_ratio: Relative axial-vs-lateral localization precision proxy.
+
+Amplitude-centric (12)
+~~~~~~~~~~~~~~~~~~~~~~
+- amp_bg_log: Log contrast of fitted amplitude against local background.
+- log_amplitude: Log-compressed fitted amplitude.
+- amp_to_intensity_ratio: Peak-to-total intensity ratio.
+- amp_quality_coupled: High when amplitude contrast and fit quality are both strong.
+- amplitude_subtracted_background: Background-corrected amplitude ratio.
+- amplitude_shot_noise_ratio: Amplitude normalized by Poisson-like background scale.
+- gaussian_energy_error_2d: Relative mismatch between integrated intensity and 2D Gaussian energy.
+- gaussian_energy_ratio_2d: 2D Gaussian energy estimate normalized by integrated intensity.
+- gaussian_energy_consistency_score_2d: Bounded 2D Gaussian energy-consistency score (higher is better).
+- gaussian_energy_error_3d: Relative mismatch between integrated intensity and 3D Gaussian energy.
+- gaussian_energy_ratio_3d: 3D Gaussian energy estimate normalized by integrated intensity.
+- gaussian_energy_consistency_score_3d: Bounded 3D Gaussian energy-consistency score (higher is better).
+
+Distortion and Correlation (6)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- distortion_energy: Correlation distortion energy for distorted Gaussian fits.
+- distortion_penalized_quality: Fit quality penalized by strong axis correlations.
+- distortion_magnitude: Root-energy distortion magnitude.
+- distortion_weighted_snr: SNR proxy penalized by distortion terms.
+- distortion_bg_coupled: Correlation distortion burden normalized by local signal.
+- distortion_shape_coupled: Joint penalty for correlation distortion and axial elongation.
+
+Advanced Model-Selection and Residual Stats (19)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- info_gain_aic_norm: Normalized AIC evidence gain for Gaussian model.
+- info_gain_bic_norm: Normalized BIC evidence gain for Gaussian model.
+- lrt_stat_log: Log-likelihood-ratio evidence against flat model.
+- poisson_advantage_norm: Normalized Poisson NLL advantage for Gaussian model.
+- bic_posterior_like_weight: Sigmoid-transformed BIC evidence proxy for Gaussian-model preference.
+- aic_posterior_like_weight: Sigmoid-transformed AIC evidence proxy for Gaussian-model preference.
+- evidence_consensus_weight: Consensus evidence score requiring both AIC and BIC support.
+- poisson_evidence_weight: Sigmoid-transformed Poisson likelihood evidence for Gaussian over flat.
+- residual_robustness_ratio: Residual Gaussianity proxy via STD/MAD ratio.
+- residual_shape_penalty: Residual non-normality penalty.
+- residual_quality_joint: High for accurate fits with small residual relative to signal.
+- model_evidence_quality: Couples fit quality to model-selection evidence magnitude.
+- residual_normality_logp: Strength of residual non-normality evidence.
+- evidence_residual_ratio: Model evidence normalized by residual scale.
+- robust_bias_ratio: Residual bias normalized by robust dispersion.
+- aic_bic_agreement: Agreement between AIC and BIC evidence signals.
+- residual_gaussianity_score: Bounded residual-shape score favoring centered, near-Gaussian residuals.
+- evidence_quality_consensus: Evidence-consensus score weighted by fit quality.
+- model_evidence_residual_purity: Joint model-evidence score penalized by residual scale and bias.
+
+Where to find exact equations:
+- /Volumes/RothsteinLab2/Marco/SNAP/_current/examples/svm_feature_pack/snap_svm_expression_pack_expressions.csv
+- Column "expression" contains the exact formula used in SNAP.
+
+Interpretation notes
+--------------------
+- Higher is not always better for every feature; importance depends on trained SVM weights.
+- Many features are ratios/log transforms to stabilize heavy-tailed fluorescence distributions.
+- Advanced model-stat terms depend on fit-window/model-stat availability in exported fit data.
